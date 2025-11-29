@@ -1,0 +1,21 @@
+{
+  "count": 2,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "value_exc_vat": 0.0,
+      "value_inc_vat": 0.0,
+      "valid_from": "2025-12-01T03:00:00Z",
+      "valid_to": "2025-12-01T03:30:00Z",
+      "payment_method": null
+    },
+    {
+      "value_exc_vat": -2.5,
+      "value_inc_vat": -2.625,
+      "valid_from": "2025-12-01T03:30:00Z",
+      "valid_to": "2025-12-01T04:00:00Z",
+      "payment_method": null
+    }
+  ]
+}

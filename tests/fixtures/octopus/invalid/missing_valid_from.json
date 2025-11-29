@@ -1,0 +1,11 @@
+{
+  "count": 2,
+  "results": [
+    {
+      "value_exc_vat": 13.73,
+      "value_inc_vat": 14.4165,
+      "valid_to": "2025-12-01T00:30:00Z",
+      "payment_method": null
+    }
+  ]
+}
