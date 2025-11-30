@@ -49,15 +49,17 @@ class ConfigurationError(Exception):
 @dataclass
 class Config:
     """Application configuration."""
-    # Octopus Energy
-    tariff_code: str
-
     # Nest Thermostat
     thermostat_name: str
     client_id: str
     client_secret: str
     refresh_token: str
     project_id: str
+
+    # Optional Octopus Energy settings
+    tariff_code: Optional[str] = None
+    account_number: Optional[str] = None
+    api_key: Optional[str] = None
 
     # Heating preferences
     low_price_temp: float = 22.0
@@ -160,6 +162,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
     # Read credentials from files
     client_secret_file = creds_path / "client_secret"
     refresh_token_file = creds_path / "refresh_token"
+    api_key_file = creds_path / "api_key"
 
     if not client_secret_file.exists():
         raise ConfigurationError(
@@ -173,15 +176,31 @@ def load_config(config_path: Optional[str] = None) -> Config:
     client_secret = client_secret_file.read_text().strip()
     refresh_token = refresh_token_file.read_text().strip()
 
+    # API key is optional
+    api_key = None
+    if api_key_file.exists():
+        api_key = api_key_file.read_text().strip()
+
     # Parse configuration sections
     try:
+        # Tariff code and account number are optional in config
+        tariff_code = None
+        if parser.has_option('octopus', 'tariff_code'):
+            tariff_code = parser.get('octopus', 'tariff_code')
+
+        account_number = None
+        if parser.has_option('octopus', 'account_number'):
+            account_number = parser.get('octopus', 'account_number')
+
         config = Config(
-            tariff_code=parser.get('octopus', 'tariff_code'),
             thermostat_name=parser.get('nest', 'thermostat_name'),
             client_id=parser.get('nest', 'client_id'),
             project_id=parser.get('nest', 'project_id'),
             client_secret=client_secret,
             refresh_token=refresh_token,
+            tariff_code=tariff_code,
+            account_number=account_number,
+            api_key=api_key,
         )
 
         # Optional heating preferences
@@ -193,6 +212,12 @@ def load_config(config_path: Optional[str] = None) -> Config:
             config.peak_start_hour = parser.getint('heating', 'peak_start_hour')
         if parser.has_option('heating', 'peak_end_hour'):
             config.peak_end_hour = parser.getint('heating', 'peak_end_hour')
+
+        # Validate Octopus Energy configuration
+        if not config.tariff_code and not (config.api_key and config.account_number):
+            raise ConfigurationError(
+                "Either tariff_code or both api_key and account_number must be configured"
+            )
 
         return config
 
@@ -555,7 +580,10 @@ def run_daily_cycle(config: Config) -> None:
     logger.info("=" * 60)
 
     # Initialize clients
-    octopus = OctopusEnergyClient()
+    octopus = OctopusEnergyClient(
+        api_key=config.api_key,
+        account_number=config.account_number
+    )
     nest = NestThermostatClient(
         project_id=config.project_id,
         refresh_token=config.refresh_token,
@@ -748,7 +776,10 @@ def run_dry_run(config: Config) -> int:
     print()
 
     # Initialize Octopus client
-    octopus = OctopusEnergyClient()
+    octopus = OctopusEnergyClient(
+        api_key=config.api_key,
+        account_number=config.account_number
+    )
 
     try:
         # Fetch prices for next 24 hours

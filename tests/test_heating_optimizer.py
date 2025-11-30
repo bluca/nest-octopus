@@ -1228,6 +1228,84 @@ class TestDryRun:
         assert mock_config.tariff_code == "E-1R-OVERRIDE-H"
 
 
+class TestConfigValidation:
+    """Test configuration validation edge cases."""
+
+    def test_load_config_missing_tariff_and_credentials(self, tmp_path):
+        """Test error when neither tariff_code nor api credentials are provided."""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("""
+[octopus]
+# No tariff_code, no api_key, no account_number
+
+[nest]
+thermostat_name = Living Room
+client_id = test-client-id.apps.googleusercontent.com
+project_id = test-project-123
+
+[heating]
+low_price_temp = 22.0
+""")
+
+        creds_dir = tmp_path / "credentials"
+        creds_dir.mkdir()
+        (creds_dir / "client_secret").write_text("test-secret")
+        (creds_dir / "refresh_token").write_text("test-refresh")
+
+        with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
+            with pytest.raises(ConfigurationError, match="Either tariff_code or both api_key and account_number must be configured"):
+                load_config(str(config_file))
+
+    def test_load_config_only_api_key_no_account(self, tmp_path):
+        """Test error when only api_key is provided without account_number."""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("""
+[octopus]
+account_number = A-12345678
+
+[nest]
+thermostat_name = Living Room
+client_id = test-client-id.apps.googleusercontent.com
+project_id = test-project-123
+""")
+
+        creds_dir = tmp_path / "credentials"
+        creds_dir.mkdir()
+        (creds_dir / "client_secret").write_text("test-secret")
+        (creds_dir / "refresh_token").write_text("test-refresh")
+        # No octopus_api_key file
+
+        with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
+            with pytest.raises(ConfigurationError, match="Either tariff_code or both api_key and account_number must be configured"):
+                load_config(str(config_file))
+
+    def test_load_config_invalid_heating_values(self, tmp_path):
+        """Test handling of invalid heating temperature values."""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("""
+[octopus]
+tariff_code = E-1R-AGILE-FLEX-22-11-25-H
+
+[nest]
+thermostat_name = Living Room
+client_id = test-client-id.apps.googleusercontent.com
+project_id = test-project-123
+
+[heating]
+low_price_temp = invalid
+average_price_temp = 17.0
+""")
+
+        creds_dir = tmp_path / "credentials"
+        creds_dir.mkdir()
+        (creds_dir / "client_secret").write_text("test-secret")
+        (creds_dir / "refresh_token").write_text("test-refresh")
+
+        with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
+            with pytest.raises(ValueError):
+                load_config(str(config_file))
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 
