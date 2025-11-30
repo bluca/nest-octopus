@@ -17,9 +17,11 @@ The daemon:
 
 import argparse
 import configparser
+import errno
 import logging
 import os
 import signal
+import socket
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -89,6 +91,39 @@ class PriceCategory:
     AVERAGE = "AVERAGE"
     HIGH = "HIGH"
     PEAK = "PEAK"
+
+
+def notify(message):
+    if not message:
+        raise ValueError("notify() requires a message")
+
+    socket_path = os.environ.get("NOTIFY_SOCKET")
+    if not socket_path:
+        return
+
+    if socket_path[0] not in ("/", "@"):
+        raise OSError(errno.EAFNOSUPPORT, "Unsupported socket type")
+
+    # Handle abstract socket.
+    if socket_path[0] == "@":
+        socket_path = "\0" + socket_path[1:]
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_CLOEXEC) as sock:
+        sock.connect(socket_path)
+        sock.sendall(message)
+
+
+def notify_ready():
+    notify(b"READY=1")
+
+
+def notify_reloading():
+    microsecs = time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000
+    notify(f"RELOADING=1\nMONOTONIC_USEC={microsecs}".encode())
+
+
+def notify_stopping():
+    notify(b"STOPPING=1")
 
 
 def find_default_config() -> Optional[str]:
@@ -526,10 +561,12 @@ def execute_heating_action(
 
         if action.eco_mode:
             logger.info(f"Enabling ECO mode: {action.reason}")
+            notify(b"STATUS=Enabling ECO mode")
             client.set_eco_mode(device_id, EcoMode.MANUAL_ECO)
         else:
             # First disable ECO mode if it's on
             logger.info(f"Disabling ECO mode")
+            notify(b"STATUS=Disabling ECO mode")
             client.set_eco_mode(device_id, EcoMode.OFF)
 
             # Only set temperature if specified (temperature=None means just turn off ECO)
@@ -537,6 +574,7 @@ def execute_heating_action(
                 logger.info(f"Setting temperature to {action.temperature}°C: {action.reason}")
                 # Set the temperature
                 client.set_heat(device_id, action.temperature)
+                notify(f"STATUS=Set temperature to {action.temperature}°C".encode())
             else:
                 logger.info(f"ECO mode disabled: {action.reason}")
     except Exception as e:
@@ -978,10 +1016,13 @@ def main():
     if args.dry_run:
         return run_dry_run(config)
 
+    notify_ready()
+
     while not shutdown_requested:
         try:
             # Check for config reload request
             if reload_config_requested:
+                notify_reloading()
                 logger.info("Reloading configuration")
                 try:
                     config = load_config(config_path)
@@ -990,6 +1031,7 @@ def main():
                     logger.error(f"Failed to reload configuration: {e}")
                     logger.info("Continuing with previous configuration")
                 reload_config_requested = False
+                notify_ready()
 
             # Calculate next 8pm
             now = datetime.now()
@@ -1028,6 +1070,8 @@ def main():
             while sleep_time > 0 and not shutdown_requested:
                 time.sleep(min(60, sleep_time))
                 sleep_time -= 60
+
+    notify_stopping()
 
     logger.info("Daemon shutdown complete")
     return 0
