@@ -60,6 +60,7 @@ class Config:
     tariff_code: Optional[str] = None
     account_number: Optional[str] = None
     api_key: Optional[str] = None
+    mpan: Optional[str] = None
 
     # Heating preferences
     low_price_temp: float = 22.0
@@ -192,6 +193,10 @@ def load_config(config_path: Optional[str] = None) -> Config:
         if parser.has_option('octopus', 'account_number'):
             account_number = parser.get('octopus', 'account_number')
 
+        mpan = None
+        if parser.has_option('octopus', 'mpan'):
+            mpan = parser.get('octopus', 'mpan')
+
         config = Config(
             thermostat_name=parser.get('nest', 'thermostat_name'),
             client_id=parser.get('nest', 'client_id'),
@@ -201,6 +206,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
             tariff_code=tariff_code,
             account_number=account_number,
             api_key=api_key,
+            mpan=mpan,
         )
 
         # Optional heating preferences
@@ -582,7 +588,8 @@ def run_daily_cycle(config: Config) -> None:
     # Initialize clients
     octopus = OctopusEnergyClient(
         api_key=config.api_key,
-        account_number=config.account_number
+        account_number=config.account_number,
+        mpan=config.mpan
     )
     nest = NestThermostatClient(
         project_id=config.project_id,
@@ -778,7 +785,8 @@ def run_dry_run(config: Config) -> int:
     # Initialize Octopus client
     octopus = OctopusEnergyClient(
         api_key=config.api_key,
-        account_number=config.account_number
+        account_number=config.account_number,
+        mpan=config.mpan
     )
 
     try:
