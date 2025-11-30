@@ -1,0 +1,23 @@
+[octopus]
+# Octopus Energy tariff code
+# Example: E-1R-AGILE-FLEX-22-11-25-H
+tariff_code = E-1R-AGILE-FLEX-22-11-25-H
+
+[nest]
+# Name of the thermostat device (matches the customName or partial device ID)
+thermostat_name = Living Room Thermostat
+
+# OAuth2 Client ID for Google Nest API
+client_id = your-client-id.apps.googleusercontent.com
+
+# Google Cloud Project ID
+project_id = your-project-id
+
+[heating]
+# Temperature setpoints in Celsius
+low_price_temp = 22.0
+average_price_temp = 17.0
+
+# Peak hours when ECO mode should be enabled (24-hour format)
+peak_start_hour = 16
+peak_end_hour = 19

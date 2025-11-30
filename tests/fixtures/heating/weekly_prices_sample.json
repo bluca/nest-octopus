@@ -1,0 +1,13 @@
+{
+  "count": 6,
+  "next": null,
+  "previous": null,
+  "results": [
+    {"valid_from": "2024-11-24T20:00:00Z", "valid_to": "2024-11-24T20:30:00Z", "value_exc_vat": 14.8, "value_inc_vat": 15.54, "payment_method": null},
+    {"valid_from": "2024-11-24T20:30:00Z", "valid_to": "2024-11-24T21:00:00Z", "value_exc_vat": 13.5, "value_inc_vat": 14.175, "payment_method": null},
+    {"valid_from": "2024-11-24T21:00:00Z", "valid_to": "2024-11-24T21:30:00Z", "value_exc_vat": 12.2, "value_inc_vat": 12.81, "payment_method": null},
+    {"valid_from": "2024-11-24T21:30:00Z", "valid_to": "2024-11-24T22:00:00Z", "value_exc_vat": 10.8, "value_inc_vat": 11.34, "payment_method": null},
+    {"valid_from": "2024-11-24T22:00:00Z", "valid_to": "2024-11-24T22:30:00Z", "value_exc_vat": 9.5, "value_inc_vat": 9.975, "payment_method": null},
+    {"valid_from": "2024-11-24T22:30:00Z", "valid_to": "2024-11-24T23:00:00Z", "value_exc_vat": 8.7, "value_inc_vat": 9.135, "payment_method": null}
+  ]
+}
