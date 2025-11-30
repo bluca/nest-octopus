@@ -645,6 +645,93 @@ def handle_reload_signal(signum, frame):
     reload_config_requested = True
 
 
+def print_price_graph(prices: List[PricePoint]) -> None:
+    """
+    Print a text-based graph of price fluctuations by half hour.
+
+    Args:
+        prices: List of price points to graph
+    """
+    if not prices:
+        return
+
+    # Extract values for graphing
+    values = [p.value_inc_vat for p in prices]
+    min_price = min(values)
+    max_price = max(values)
+    price_range = max_price - min_price
+
+    # Graph dimensions
+    graph_height = 15
+    graph_width = min(len(prices), 48)  # Show up to 48 half-hour periods (24 hours)
+
+    # Sample prices if we have more than graph_width points
+    if len(prices) > graph_width:
+        step = len(prices) / graph_width
+        sampled_prices = [prices[int(i * step)] for i in range(graph_width)]
+    else:
+        sampled_prices = prices[:graph_width]
+
+    print("\n" + "=" * 70)
+    print("  PRICE FLUCTUATION (next 24 hours)")
+    print("=" * 70)
+    print()
+
+    # Create the graph
+    for row in range(graph_height, -1, -1):
+        # Calculate the price value this row represents
+        if price_range > 0:
+            row_price = min_price + (price_range * row / graph_height)
+        else:
+            row_price = min_price
+
+        # Check if this row has any data points
+        has_data = False
+        for price in sampled_prices:
+            if price_range > 0:
+                normalized_value = (price.value_inc_vat - min_price) / price_range * graph_height
+            else:
+                normalized_value = graph_height / 2
+            if abs(normalized_value - row) < 0.5:
+                has_data = True
+                break
+
+        # Y-axis label (show price on rows with data points)
+        if has_data or row == graph_height or row == 0:
+            print(f"  {row_price:6.1f}p |", end="")
+        else:
+            print(f"          |", end="")
+
+        # Plot the data points
+        for price in sampled_prices:
+            if price_range > 0:
+                normalized_value = (price.value_inc_vat - min_price) / price_range * graph_height
+            else:
+                normalized_value = graph_height / 2
+
+            if abs(normalized_value - row) < 0.5:
+                print("*", end="")
+            else:
+                print(" ", end="")
+
+        print()
+
+    # X-axis
+    print("          +" + "-" * len(sampled_prices))
+
+    # Time labels
+    print("           ", end="")
+    for i, price in enumerate(sampled_prices):
+        if i % 8 == 0:  # Show label every 4 hours
+            if isinstance(price.valid_from, str):
+                time = datetime.fromisoformat(price.valid_from.replace('Z', '+00:00'))
+            else:
+                time = price.valid_from
+            hour = time.strftime("%H:%M")
+            print(hour, end=" " * (8 - len(hour) + 1))
+    print("\n")
+
+
 def run_dry_run(config: Config) -> int:
     """
     Dry run mode: Fetch prices, calculate schedule, and display without executing.
@@ -709,6 +796,9 @@ def run_dry_run(config: Config) -> int:
         print(f"  Peak Hours:      {config.peak_start_hour:02d}:00 - {config.peak_end_hour:02d}:00")
         print(f"  Low Temp:        {config.low_price_temp}°C")
         print(f"  Average Temp:    {config.average_price_temp}°C")
+
+        # Print price graph
+        print_price_graph(daily_prices)
 
         # Calculate heating schedule
         actions = calculate_heating_schedule(
