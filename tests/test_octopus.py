@@ -825,3 +825,354 @@ class TestNoNetworkAccess:
             )
 
         assert "Network access is blocked in tests" in str(exc_info.value)
+
+
+class TestApiKeyAndAccountNumber:
+    """Test API key and account number initialization."""
+
+    def test_init_with_api_key_and_account(self):
+        """Test client initialization with API key and account number."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        assert client.api_key == 'sk_live_test_key'
+        assert client.account_number == 'A-1234567'
+        assert client._cached_tariff_code is None
+        assert client._cache_expires_at is None
+
+    def test_init_without_api_key_and_account(self):
+        """Test client initialization without API key and account number."""
+        client = OctopusEnergyClient()
+
+        assert client.api_key is None
+        assert client.account_number is None
+        assert client._cached_tariff_code is None
+
+
+class TestGetCurrentTariffCode:
+    """Test fetching current tariff code from account."""
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_success(self, mock_get):
+        """Test successful tariff code fetch from account."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        # Mock the API response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = load_fixture('valid/account_response.json')
+        mock_get.return_value = mock_response
+
+        tariff_code = client.get_current_tariff_code()
+
+        assert tariff_code == 'E-1R-AGILE-24-10-01-N'
+        assert client._cached_tariff_code == 'E-1R-AGILE-24-10-01-N'
+        assert client._cache_expires_at is not None
+
+        # Verify API was called with correct auth
+        mock_get.assert_called_once()
+        call_kwargs = mock_get.call_args[1]
+        assert call_kwargs['auth'] == ('sk_live_test_key', '')
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_openended(self, mock_get):
+        """Test tariff code fetch with open-ended agreement."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        # Mock the API response with open-ended tariff
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = load_fixture('valid/account_openended_tariff.json')
+        mock_get.return_value = mock_response
+
+        tariff_code = client.get_current_tariff_code()
+
+        assert tariff_code == 'E-1R-AGILE-24-10-01-N'
+
+    def test_get_current_tariff_code_no_credentials(self):
+        """Test that error is raised when API key/account not provided."""
+        client = OctopusEnergyClient()
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "API key and account number required" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_http_error(self, mock_get):
+        """Test handling of HTTP errors."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        # Mock HTTP 404 error
+        mock_response = Mock()
+        mock_response.status_code = 404
+        mock_response.text = 'Account not found'
+
+        # Create HTTPError with response attached
+        http_error = requests.exceptions.HTTPError()
+        http_error.response = mock_response
+
+        mock_response.raise_for_status.side_effect = http_error
+        mock_get.return_value = mock_response
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "HTTP error occurred" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_no_properties(self, mock_get):
+        """Test handling when account has no properties."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'number': 'A-1234567', 'properties': []}
+        mock_get.return_value = mock_response
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "No properties found" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_no_electricity_meters(self, mock_get):
+        """Test handling when property has no electricity meters."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'number': 'A-1234567',
+            'properties': [{'electricity_meter_points': []}]
+        }
+        mock_get.return_value = mock_response
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "No electricity meter points found" in str(exc_info.value)
+
+
+class TestTariffCodeCaching:
+    """Test tariff code caching behavior."""
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    @patch('nest_octopus.octopus.time.monotonic_ns')
+    def test_cache_used_within_validity_period(self, mock_monotonic_ns, mock_get):
+        """Test that cached tariff code is used when still valid."""
+        # Start at monotonic time 1000 seconds (in nanoseconds)
+        mock_monotonic_ns.return_value = 1000 * 1_000_000_000
+
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        # Mock the API response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = load_fixture('valid/account_response.json')
+        mock_get.return_value = mock_response
+
+        # First call - should fetch from API
+        tariff_code1 = client.get_current_tariff_code()
+        assert mock_get.call_count == 1
+
+        # Advance monotonic time by 1 hour (3600 seconds in nanoseconds) - cache still valid
+        mock_monotonic_ns.return_value = 1000 * 1_000_000_000 + 3600 * 1_000_000_000
+
+        # Second call - should use cache
+        tariff_code2 = client.get_current_tariff_code()
+        assert mock_get.call_count == 1  # No additional API call
+        assert tariff_code1 == tariff_code2
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    @patch('nest_octopus.octopus.time.monotonic_ns')
+    def test_cache_expires_after_12_hours(self, mock_monotonic_ns, mock_get):
+        """Test that cache expires after 12 hours."""
+        # Start at monotonic time 1000 seconds (in nanoseconds)
+        mock_monotonic_ns.return_value = 1000 * 1_000_000_000
+
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        # Mock the API response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = load_fixture('valid/account_response.json')
+        mock_get.return_value = mock_response
+
+        # First call
+        client.get_current_tariff_code()
+        assert mock_get.call_count == 1
+
+        # Advance monotonic time by 13 hours (46800 seconds in nanoseconds) - cache expired
+        mock_monotonic_ns.return_value = 1000 * 1_000_000_000 + 46800 * 1_000_000_000
+
+        # Second call - cache should be expired
+        client.get_current_tariff_code()
+        assert mock_get.call_count == 2  # New API call made
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    @patch('nest_octopus.octopus.time.monotonic_ns')
+    @patch('nest_octopus.octopus.datetime')
+    def test_cache_expires_when_tariff_ends(self, mock_datetime, mock_monotonic_ns, mock_get):
+        """Test that cache expires when tariff validity ends."""
+        from datetime import datetime
+
+        # Mock wall clock time for tariff expiry calculations
+        initial_time = datetime(2025, 11, 30, 12, 0, 0)
+        mock_datetime.now.return_value = initial_time
+        mock_datetime.fromisoformat = datetime.fromisoformat
+
+        # Mock monotonic time (1000 seconds in nanoseconds)
+        mock_monotonic_ns.return_value = 1000 * 1_000_000_000
+
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        # Mock the API response with tariff that expires in 2 hours
+        # The fixture has tariff ending at 2026-12-31, but we need to test sooner expiry
+        mock_response = Mock()
+        mock_response.status_code = 200
+        fixture_data = load_fixture('valid/account_response.json')
+        # Modify the tariff to expire in 2 hours from now
+        tariff_expiry = datetime(2025, 11, 30, 14, 0, 0)  # 2 hours from initial_time
+        fixture_data['properties'][0]['electricity_meter_points'][0]['agreements'][0]['valid_to'] = tariff_expiry.isoformat() + 'Z'
+        mock_response.json.return_value = fixture_data
+        mock_get.return_value = mock_response
+
+        # First call - cache set to expire in 2 hours (7200 seconds)
+        tariff1 = client.get_current_tariff_code()
+        assert mock_get.call_count == 1
+        # Cache should be set to expire at monotonic 1000 + 7200 seconds (in nanoseconds)
+
+        # Advance monotonic time by 1 hour (3600 seconds) - cache still valid
+        mock_monotonic_ns.return_value = 1000 * 1_000_000_000 + 3600 * 1_000_000_000
+        client.get_current_tariff_code()
+        assert mock_get.call_count == 1  # No new call (cache still valid)
+
+        # Advance monotonic time by 2.5 hours (9000 seconds) - past tariff expiry
+        mock_monotonic_ns.return_value = 1000 * 1_000_000_000 + 9000 * 1_000_000_000
+        client.get_current_tariff_code()
+        assert mock_get.call_count == 2  # New API call made
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    @patch('nest_octopus.octopus.time.monotonic_ns')
+    def test_openended_tariff_only_expires_by_time(self, mock_monotonic_ns, mock_get):
+        """Test that open-ended tariff cache only expires by time."""
+        # Start at monotonic time 1000 seconds (in nanoseconds)
+        mock_monotonic_ns.return_value = 1000 * 1_000_000_000
+
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        # Mock the API response with open-ended tariff
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = load_fixture('valid/account_openended_tariff.json')
+        mock_get.return_value = mock_response
+
+        # First call
+        client.get_current_tariff_code()
+        assert mock_get.call_count == 1
+
+        # Advance monotonic time by 6 hours (21600 seconds in nanoseconds) - cache still valid
+        mock_monotonic_ns.return_value = 1000 * 1_000_000_000 + 21600 * 1_000_000_000
+        client.get_current_tariff_code()
+        assert mock_get.call_count == 1  # No new call
+
+        # Advance monotonic time by 13 hours total (46800 seconds in nanoseconds) - cache expired
+        mock_monotonic_ns.return_value = 1000 * 1_000_000_000 + 46800 * 1_000_000_000
+        client.get_current_tariff_code()
+        assert mock_get.call_count == 2  # New call made
+
+
+class TestGetUnitRatesWithAutoTariff:
+    """Test get_unit_rates with automatic tariff code lookup."""
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_unit_rates_auto_fetches_tariff(self, mock_get):
+        """Test that get_unit_rates automatically fetches tariff code."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        # Mock account API response
+        account_response = Mock()
+        account_response.status_code = 200
+        account_response.json.return_value = load_fixture('valid/account_response.json')
+
+        # Mock unit rates API response
+        rates_response = Mock()
+        rates_response.status_code = 200
+        rates_response.json.return_value = load_fixture('valid/standard_response.json')
+
+        # Setup mock to return different responses for different URLs
+        def mock_get_side_effect(url, **kwargs):
+            if 'accounts' in url:
+                return account_response
+            else:
+                return rates_response
+
+        mock_get.side_effect = mock_get_side_effect
+
+        # Call get_unit_rates without tariff_code
+        prices = client.get_unit_rates(
+            period_from='2025-11-30T00:00Z',
+            period_to='2025-12-01T00:00Z'
+        )
+
+        # Should have made 2 calls: one for account, one for rates
+        assert mock_get.call_count == 2
+        assert len(prices) > 0
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_unit_rates_uses_explicit_tariff(self, mock_get):
+        """Test that explicit tariff code bypasses account lookup."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        # Mock only the rates API response
+        rates_response = Mock()
+        rates_response.status_code = 200
+        rates_response.json.return_value = load_fixture('valid/standard_response.json')
+        mock_get.return_value = rates_response
+
+        # Call get_unit_rates with explicit tariff_code
+        prices = client.get_unit_rates(
+            tariff_code='E-1R-AGILE-24-10-01-N',
+            period_from='2025-11-30T00:00Z',
+            period_to='2025-12-01T00:00Z'
+        )
+
+        # Should only call rates API, not account API
+        assert mock_get.call_count == 1
+        assert len(prices) > 0
