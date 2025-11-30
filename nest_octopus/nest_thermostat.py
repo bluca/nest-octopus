@@ -162,7 +162,7 @@ class NestThermostatClient:
             NestAPIError: If token refresh fails
         """
         try:
-            logger.info("Refreshing OAuth2 access token")
+            logger.debug("Refreshing OAuth2 access token")
 
             params = {
                 'client_id': self.client_id,
@@ -192,14 +192,14 @@ class NestThermostatClient:
             if 'scope' in token_data:
                 logger.debug(f"Token scope: {token_data['scope']}")
             if 'refresh_token_expires_in' in token_data:
-                logger.info(f"Refresh token expires in {token_data['refresh_token_expires_in']} seconds")
+                logger.debug(f"Refresh token expires in {token_data['refresh_token_expires_in']} seconds")
 
             # Update session authorization header
             self.session.headers.update({
                 'Authorization': f'Bearer {self.access_token}'
             })
 
-            logger.info(f"Access token refreshed, expires at {self.token_expiry}")
+            logger.debug(f"Access token refreshed, expires at {self.token_expiry}")
 
         except requests.exceptions.HTTPError as e:
             error_msg = f"OAuth2 token refresh failed: {e.response.status_code} - {e.response.text}"
@@ -221,7 +221,7 @@ class NestThermostatClient:
         Ensure access token is valid, refreshing if necessary.
         """
         if self.token_expiry is None or datetime.now() >= self.token_expiry:
-            logger.info("Access token expired or about to expire, refreshing")
+            logger.debug("Access token expired or about to expire, refreshing")
             self._refresh_access_token()
 
     def _is_token_expired_error(self, response) -> bool:
@@ -258,13 +258,13 @@ class NestThermostatClient:
         url = f"{self.base_url}/enterprises/{self.project_id}/devices"
 
         try:
-            logger.info(f"Listing devices for project {self.project_id}")
+            logger.debug(f"Listing devices for project {self.project_id}")
             response = self.session.get(url, timeout=self.timeout)
             response.raise_for_status()
 
             data = response.json()
             devices = data.get('devices', [])
-            logger.info(f"Found {len(devices)} device(s)")
+            logger.debug(f"Found {len(devices)} device(s)")
             return devices
 
         except requests.exceptions.HTTPError as e:
@@ -277,7 +277,7 @@ class NestThermostatClient:
                     response.raise_for_status()
                     data = response.json()
                     devices = data.get('devices', [])
-                    logger.info(f"Found {len(devices)} device(s) after retry")
+                    logger.debug(f"Found {len(devices)} device(s) after retry")
                     return devices
                 except requests.exceptions.HTTPError as retry_error:
                     error_msg = f"HTTP error after retry: {retry_error.response.status_code} - {retry_error.response.text}"
@@ -320,13 +320,13 @@ class NestThermostatClient:
         url = f"{self.base_url}/{device_id}"
 
         try:
-            logger.info(f"Getting device info for {device_id}")
+            logger.debug(f"Getting device info for {device_id}")
             response = self.session.get(url, timeout=self.timeout)
             response.raise_for_status()
 
             data = response.json()
             status = ThermostatStatus(data)
-            logger.info(f"Retrieved status: {status}")
+            logger.debug(f"Retrieved status: {status}")
             return status
 
         except requests.exceptions.HTTPError as e:
@@ -339,7 +339,7 @@ class NestThermostatClient:
                     response.raise_for_status()
                     data = response.json()
                     status = ThermostatStatus(data)
-                    logger.info(f"Retrieved status after retry: {status}")
+                    logger.debug(f"Retrieved status after retry: {status}")
                     return status
                 except requests.exceptions.HTTPError as retry_error:
                     error_msg = f"HTTP error after retry: {retry_error.response.status_code} - {retry_error.response.text}"
@@ -513,7 +513,7 @@ class NestThermostatClient:
         }
 
         try:
-            logger.info(f"Executing command {command} on {device_id} with params {params}")
+            logger.debug(f"Executing command {command} on {device_id} with params {params}")
             response = self.session.post(url, json=payload, timeout=self.timeout)
             response.raise_for_status()
 
@@ -523,7 +523,7 @@ class NestThermostatClient:
             else:
                 result = {}
 
-            logger.info(f"Command executed successfully")
+            logger.debug(f"Command executed successfully")
             return result
 
         except requests.exceptions.HTTPError as e:
@@ -538,7 +538,7 @@ class NestThermostatClient:
                         result = response.json()
                     else:
                         result = {}
-                    logger.info(f"Command executed successfully after retry")
+                    logger.debug(f"Command executed successfully after retry")
                     return result
                 except requests.exceptions.HTTPError as retry_error:
                     error_msg = f"HTTP error after retry: {retry_error.response.status_code} - {retry_error.response.text}"
@@ -567,7 +567,7 @@ class NestThermostatClient:
     def close(self):
         """Close the HTTP session."""
         self.session.close()
-        logger.info("Nest API client session closed")
+        logger.debug("Nest API client session closed")
 
     def __enter__(self):
         """Context manager entry."""

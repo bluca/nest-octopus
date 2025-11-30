@@ -128,13 +128,13 @@ class OctopusEnergyClient:
         # Check if cache is still valid
         if self._cached_tariff_code and self._cache_expires_at:
             if time.monotonic_ns() < self._cache_expires_at:
-                logger.info(f"Using cached tariff code: {self._cached_tariff_code}")
+                logger.debug(f"Using cached tariff code: {self._cached_tariff_code}")
                 return self._cached_tariff_code
 
         url = f"{self.base_url}/accounts/{self.account_number}/"
 
         try:
-            logger.info(f"Fetching account information from {url}")
+            logger.debug(f"Fetching account information from {url}")
             response = self.session.get(
                 url,
                 auth=(self.api_key, ''),  # API key as username, empty password
@@ -226,7 +226,7 @@ class OctopusEnergyClient:
             if not tariff_code:
                 raise OctopusAPIError("Tariff code not found in agreement")
 
-            logger.info(f"Found current tariff code: {tariff_code}")
+            logger.debug(f"Found current tariff code: {tariff_code}")
 
             # Calculate cache expiration time using monotonic clock
             # Cache expires after 12 hours OR when tariff ends, whichever is earlier
@@ -234,7 +234,7 @@ class OctopusEnergyClient:
             cache_expiry_monotonic = time.monotonic_ns() + max_cache_duration
 
             if tariff_valid_until:
-                logger.info(f"Tariff valid until: {tariff_valid_until.isoformat()}")
+                logger.debug(f"Tariff valid until: {tariff_valid_until.isoformat()}")
                 # Calculate nanoseconds until tariff expiry
                 time_until_tariff_expiry = int((tariff_valid_until - now).total_seconds() * 1_000_000_000)
                 if time_until_tariff_expiry > 0:
@@ -303,7 +303,7 @@ class OctopusEnergyClient:
         url = f"{self.base_url}/{endpoint}"
 
         try:
-            logger.info(f"Fetching unit rates from {url} for period {period_from} to {period_to}")
+            logger.debug(f"Fetching unit rates from {url} for period {period_from} to {period_to}")
             response = self.session.get(url, params=params, timeout=self.timeout)
             response.raise_for_status()
 
@@ -316,7 +316,7 @@ class OctopusEnergyClient:
             # Sort by valid_from timestamp (API returns in reverse chronological order)
             price_points.sort(key=lambda p: p.valid_from)
 
-            logger.info(f"Successfully retrieved {len(price_points)} price points")
+            logger.debug(f"Successfully retrieved {len(price_points)} price points")
             return price_points
 
         except requests.exceptions.Timeout:
@@ -377,12 +377,12 @@ class OctopusEnergyClient:
         url = f"{self.base_url}/{endpoint}"
 
         try:
-            logger.info(f"Fetching raw data from {url}")
+            logger.debug(f"Fetching raw data from {url}")
             response = self.session.get(url, params=params, timeout=self.timeout)
             response.raise_for_status()
 
             data = response.json()
-            logger.info(f"Successfully retrieved raw data")
+            logger.debug(f"Successfully retrieved raw data")
             return data
 
         except requests.exceptions.Timeout:
@@ -408,7 +408,7 @@ class OctopusEnergyClient:
     def close(self):
         """Close the HTTP session."""
         self.session.close()
-        logger.info("Octopus Energy API client session closed")
+        logger.debug("Octopus Energy API client session closed")
 
     def __enter__(self):
         """Context manager entry."""

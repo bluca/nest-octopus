@@ -146,7 +146,7 @@ def find_default_config() -> Optional[str]:
 
     for path in search_paths:
         if os.path.exists(path):
-            logger.info(f"Found configuration file: {path}")
+            logger.debug(f"Found configuration file: {path}")
             return path
 
     return None
@@ -523,7 +523,7 @@ def calculate_heating_schedule(
     actions.sort(key=lambda a: a.timestamp)
 
     # Log the schedule
-    logger.info(f"Generated heating schedule with {len(actions)} actions")
+    logger.debug(f"Generated heating schedule with {len(actions)} actions")
     for action in actions:
         logger.info(f"  {action}")
 
@@ -601,7 +601,7 @@ def find_thermostat(client: NestThermostatClient, name: str) -> str:
     for device in devices:
         # Check if name matches device ID or custom name
         if name in device.device_id or name.lower() in device.device_id.lower():
-            logger.info(f"Found thermostat: {device.device_id}")
+            logger.debug(f"Found thermostat: {device.device_id}")
             return device.device_id
 
     raise ValueError(f"Thermostat '{name}' not found")
@@ -619,9 +619,9 @@ def run_daily_cycle(config: Config) -> None:
     Args:
         config: Application configuration
     """
-    logger.info("=" * 60)
-    logger.info("Starting daily heating optimization cycle")
-    logger.info("=" * 60)
+    logger.debug("=" * 60)
+    logger.debug("Starting daily heating optimization cycle")
+    logger.debug("=" * 60)
 
     # Initialize clients
     octopus = OctopusEnergyClient(
@@ -643,7 +643,7 @@ def run_daily_cycle(config: Config) -> None:
         # Fetch prices for next 24 hours
         now = datetime.now()
         tomorrow = now + timedelta(days=1)
-        logger.info(f"Fetching prices from {now.isoformat()} to {tomorrow.isoformat()}")
+        logger.debug(f"Fetching prices from {now.isoformat()} to {tomorrow.isoformat()}")
 
         daily_prices = octopus.get_unit_rates(
             tariff_code=config.tariff_code,
@@ -655,11 +655,11 @@ def run_daily_cycle(config: Config) -> None:
             logger.error("No prices available for next 24 hours")
             return
 
-        logger.info(f"Fetched {len(daily_prices)} price points for next 24 hours")
+        logger.debug(f"Fetched {len(daily_prices)} price points for next 24 hours")
 
         # Fetch previous week of prices for comparison
         week_ago = now - timedelta(days=7)
-        logger.info(f"Fetching historical prices from {week_ago.isoformat()}")
+        logger.debug(f"Fetching historical prices from {week_ago.isoformat()}")
 
         weekly_prices = octopus.get_unit_rates(
             tariff_code=config.tariff_code,
@@ -667,7 +667,7 @@ def run_daily_cycle(config: Config) -> None:
             period_to=now.isoformat()
         )
 
-        logger.info(f"Fetched {len(weekly_prices)} price points for previous week")
+        logger.debug(f"Fetched {len(weekly_prices)} price points for previous week")
 
         # Calculate heating schedule
         actions = calculate_heating_schedule(
@@ -688,7 +688,7 @@ def run_daily_cycle(config: Config) -> None:
             sleep_seconds = (action.timestamp - now).total_seconds()
 
             if sleep_seconds > 0:
-                logger.info(f"Sleeping for {sleep_seconds/60:.1f} minutes until next action")
+                logger.debug(f"Sleeping for {sleep_seconds/60:.1f} minutes until next action")
                 time.sleep(sleep_seconds)
 
             # Execute the action
@@ -696,7 +696,7 @@ def run_daily_cycle(config: Config) -> None:
 
             # Check if this is the last action
             if i == len(actions) - 1:
-                logger.info("All scheduled actions completed")
+                logger.debug("All scheduled actions completed")
 
     finally:
         octopus.close()
@@ -707,14 +707,14 @@ def handle_shutdown_signal(signum, frame):
     """Handle SIGINT/SIGTERM for graceful shutdown."""
     global shutdown_requested
     signal_name = signal.Signals(signum).name
-    logger.info(f"Received {signal_name}, initiating graceful shutdown")
+    logger.debug(f"Received {signal_name}, initiating graceful shutdown")
     shutdown_requested = True
 
 
 def handle_reload_signal(signum, frame):
     """Handle SIGHUP to reload configuration."""
     global reload_config_requested
-    logger.info("Received SIGHUP, will reload configuration")
+    logger.debug("Received SIGHUP, will reload configuration")
     reload_config_requested = True
 
 
@@ -976,7 +976,7 @@ def main():
     )
     args = parser.parse_args()
 
-    logger.info("Heating Optimization Daemon starting")
+    logger.debug("Heating Optimization Daemon starting")
 
     # Register signal handlers
     signal.signal(signal.SIGINT, handle_shutdown_signal)
@@ -989,7 +989,7 @@ def main():
 
     if args.dry_run and args.tariff_code:
         # Dry-run mode with tariff-code: create minimal config
-        logger.info("Dry-run mode with --tariff-code, skipping config file")
+        logger.debug("Dry-run mode with --tariff-code, skipping config file")
         config = Config(
             tariff_code=args.tariff_code,
             thermostat_name="",
@@ -1002,11 +1002,11 @@ def main():
         # Load full configuration
         try:
             config = load_config(config_path)
-            logger.info("Configuration loaded successfully")
+            logger.debug("Configuration loaded successfully")
 
             # Override tariff code if specified
             if args.tariff_code:
-                logger.info(f"Overriding tariff code with: {args.tariff_code}")
+                logger.debug(f"Overriding tariff code with: {args.tariff_code}")
                 config.tariff_code = args.tariff_code
         except ConfigurationError as e:
             logger.error(f"Configuration error: {e}")
@@ -1023,13 +1023,13 @@ def main():
             # Check for config reload request
             if reload_config_requested:
                 notify_reloading()
-                logger.info("Reloading configuration")
+                logger.debug("Reloading configuration")
                 try:
                     config = load_config(config_path)
-                    logger.info("Configuration reloaded successfully")
+                    logger.debug("Configuration reloaded successfully")
                 except ConfigurationError as e:
                     logger.error(f"Failed to reload configuration: {e}")
-                    logger.info("Continuing with previous configuration")
+                    logger.debug("Continuing with previous configuration")
                 reload_config_requested = False
                 notify_ready()
 
@@ -1043,7 +1043,7 @@ def main():
 
             # Sleep until 8pm, checking for signals periodically
             sleep_seconds = (next_run - datetime.now()).total_seconds()
-            logger.info(f"Next cycle at {next_run.isoformat()} (in {sleep_seconds/3600:.1f} hours)")
+            logger.debug(f"Next cycle at {next_run.isoformat()} (in {sleep_seconds/3600:.1f} hours)")
 
             # Sleep in small intervals to check for signals
             sleep_interval = min(60, sleep_seconds)  # Check every minute or less
@@ -1065,7 +1065,7 @@ def main():
         except Exception as e:
             logger.error(f"Error in daily cycle: {e}", exc_info=True)
             # Sleep for an hour before retrying
-            logger.info("Sleeping for 1 hour before retry")
+            logger.debug("Sleeping for 1 hour before retry")
             sleep_time = 3600
             while sleep_time > 0 and not shutdown_requested:
                 time.sleep(min(60, sleep_time))
@@ -1073,7 +1073,7 @@ def main():
 
     notify_stopping()
 
-    logger.info("Daemon shutdown complete")
+    logger.debug("Daemon shutdown complete")
     return 0
 
 
