@@ -426,6 +426,69 @@ class TestGetRawData:
         assert raw_data['next'] is not None
         assert 'page=2' in raw_data['next']
 
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_raw_data_timeout(self, mock_get, client):
+        """Test get_raw_data handles timeout errors."""
+        mock_get.side_effect = requests.exceptions.Timeout("Connection timeout")
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_raw_data(
+                tariff_code='E-1R-AGILE-24-10-01-N',
+                period_from='2025-12-01T00:00Z',
+                period_to='2025-12-01T04:00Z'
+            )
+
+        assert "timed out" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_raw_data_http_error(self, mock_get, client):
+        """Test get_raw_data handles HTTP errors."""
+        mock_response = Mock()
+        mock_response.status_code = 500
+        mock_response.text = 'Internal Server Error'
+        mock_get.return_value = mock_response
+        mock_get.return_value.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response)
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_raw_data(
+                tariff_code='E-1R-AGILE-24-10-01-N',
+                period_from='2025-12-01T00:00Z',
+                period_to='2025-12-01T04:00Z'
+            )
+
+        assert "HTTP error" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_raw_data_connection_error(self, mock_get, client):
+        """Test get_raw_data handles connection errors."""
+        mock_get.side_effect = requests.exceptions.ConnectionError("Network unreachable")
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_raw_data(
+                tariff_code='E-1R-AGILE-24-10-01-N',
+                period_from='2025-12-01T00:00Z',
+                period_to='2025-12-01T04:00Z'
+            )
+
+        assert "Request failed" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_raw_data_invalid_json(self, mock_get, client):
+        """Test get_raw_data handles invalid JSON."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.side_effect = ValueError("Invalid JSON")
+        mock_get.return_value = mock_response
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_raw_data(
+                tariff_code='E-1R-AGILE-24-10-01-N',
+                period_from='2025-12-01T00:00Z',
+                period_to='2025-12-01T04:00Z'
+            )
+
+        assert "Invalid JSON" in str(exc_info.value)
+
 
 class TestContextManager:
     """Test cases for context manager functionality."""
@@ -969,6 +1032,203 @@ class TestGetCurrentTariffCode:
             client.get_current_tariff_code()
 
         assert "No electricity meter points found" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_multiple_meters_no_mpan(self, mock_get):
+        """Test error when multiple meters and no MPAN specified."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = load_fixture('valid/account_multiple_meters.json')
+        mock_get.return_value = mock_response
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "Multiple electricity meters found" in str(exc_info.value)
+        assert "1234567890123" in str(exc_info.value)
+        assert "9876543210987" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_multiple_meters_with_mpan(self, mock_get):
+        """Test filtering by MPAN when multiple meters exist."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567',
+            mpan='9876543210987'
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = load_fixture('valid/account_multiple_meters.json')
+        mock_get.return_value = mock_response
+
+        tariff_code = client.get_current_tariff_code()
+
+        assert tariff_code == 'E-1R-FLEX-24-11-01-N'
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_invalid_mpan(self, mock_get):
+        """Test error when specified MPAN doesn't match any meter."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567',
+            mpan='0000000000000'
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = load_fixture('valid/account_multiple_meters.json')
+        mock_get.return_value = mock_response
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "No meter found with MPAN '0000000000000'" in str(exc_info.value)
+        assert "1234567890123" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_timeout(self, mock_get):
+        """Test handling of timeout errors."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        mock_get.side_effect = requests.exceptions.Timeout("Connection timeout")
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "timed out" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_connection_error(self, mock_get):
+        """Test handling of connection errors."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        mock_get.side_effect = requests.exceptions.ConnectionError("Network unreachable")
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "Request failed" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_invalid_json(self, mock_get):
+        """Test handling of invalid JSON response."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.side_effect = ValueError("Invalid JSON")
+        mock_get.return_value = mock_response
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "Invalid JSON response" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_no_agreements(self, mock_get):
+        """Test handling when meter has no tariff agreements."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'number': 'A-1234567',
+            'properties': [{
+                'electricity_meter_points': [{
+                    'mpan': '1234567890123',
+                    'is_export': False,
+                    'agreements': []
+                }]
+            }]
+        }
+        mock_get.return_value = mock_response
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "No tariff agreements found" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_no_current_agreement(self, mock_get):
+        """Test handling when no currently valid agreement exists."""
+        from datetime import datetime
+
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        # Agreement in the past
+        mock_response.json.return_value = {
+            'number': 'A-1234567',
+            'properties': [{
+                'electricity_meter_points': [{
+                    'mpan': '1234567890123',
+                    'is_export': False,
+                    'agreements': [{
+                        'tariff_code': 'E-1R-OLD-TARIFF-N',
+                        'valid_from': '2020-01-01T00:00:00Z',
+                        'valid_to': '2021-01-01T00:00:00Z'
+                    }]
+                }]
+            }]
+        }
+        mock_get.return_value = mock_response
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "No currently valid tariff agreement found" in str(exc_info.value)
+
+    @patch('nest_octopus.octopus.requests.Session.get')
+    def test_get_current_tariff_code_only_export_meters(self, mock_get):
+        """Test handling when only export meters exist."""
+        client = OctopusEnergyClient(
+            api_key='sk_live_test_key',
+            account_number='A-1234567'
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'number': 'A-1234567',
+            'properties': [{
+                'electricity_meter_points': [{
+                    'mpan': '1234567890123',
+                    'is_export': True,
+                    'agreements': [{
+                        'tariff_code': 'E-1R-EXPORT-TARIFF-N',
+                        'valid_from': '2024-01-01T00:00:00Z'
+                    }]
+                }]
+            }]
+        }
+        mock_get.return_value = mock_response
+
+        with pytest.raises(OctopusAPIError) as exc_info:
+            client.get_current_tariff_code()
+
+        assert "No import electricity meter point found" in str(exc_info.value)
 
 
 class TestTariffCodeCaching:

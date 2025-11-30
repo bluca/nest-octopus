@@ -55,13 +55,14 @@ class OctopusEnergyClient:
         session (requests.Session): HTTP session for connection pooling
         api_key (str|None): API key for authenticated requests
         account_number (str|None): Account number for fetching tariff information
+        mpan (str|None): Meter Point Administration Number for filtering when multiple meters exist
         _cached_tariff_code (str|None): Cached tariff code
         _cache_expires_at (int|None): Monotonic timestamp when cache expires (nanoseconds)
     """
 
     BASE_URL = "https://api.octopus.energy/v1"
 
-    def __init__(self, timeout: int = 30, api_key: Optional[str] = None, account_number: Optional[str] = None):
+    def __init__(self, timeout: int = 30, api_key: Optional[str] = None, account_number: Optional[str] = None, mpan: Optional[str] = None):
         """
         Initialize the Octopus Energy API client.
 
@@ -69,12 +70,14 @@ class OctopusEnergyClient:
             timeout: Request timeout in seconds (default: 30)
             api_key: Optional API key for authenticated requests
             account_number: Optional account number for automatic tariff lookup
+            mpan: Optional Meter Point Administration Number for filtering when multiple meters exist
         """
         self.base_url = self.BASE_URL
         self.timeout = timeout
         self.session = requests.Session()
         self.api_key = api_key
         self.account_number = account_number
+        self.mpan = mpan
         self._cached_tariff_code: Optional[str] = None
         self._cache_expires_at: Optional[int] = None
 
@@ -153,15 +156,35 @@ class OctopusEnergyClient:
             if not electricity_meter_points:
                 raise OctopusAPIError("No electricity meter points found")
 
-            # Get the first non-export meter point
-            meter_point = None
-            for mp in electricity_meter_points:
-                if not mp.get('is_export', False):
-                    meter_point = mp
-                    break
+            # Filter for non-export (import) meter points
+            import_meters = [mp for mp in electricity_meter_points if not mp.get('is_export', False)]
 
-            if not meter_point:
+            if not import_meters:
                 raise OctopusAPIError("No import electricity meter point found")
+
+            # Handle multiple meters
+            meter_point = None
+            if len(import_meters) == 1:
+                # Only one meter, use it
+                meter_point = import_meters[0]
+            elif len(import_meters) > 1:
+                # Multiple meters - need mpan to filter
+                if not self.mpan:
+                    mpans = [mp.get('mpan') for mp in import_meters]
+                    raise OctopusAPIError(
+                        f"Multiple electricity meters found ({len(import_meters)}). "
+                        f"Specify 'mpan' parameter to select one. Available MPANs: {', '.join(mpans)}"
+                    )
+                # Filter by mpan
+                for mp in import_meters:
+                    if mp.get('mpan') == self.mpan:
+                        meter_point = mp
+                        break
+                if not meter_point:
+                    raise OctopusAPIError(
+                        f"No meter found with MPAN '{self.mpan}'. "
+                        f"Available MPANs: {', '.join(mp.get('mpan') for mp in import_meters)}"
+                    )
 
             agreements = meter_point.get('agreements', [])
             if not agreements:
