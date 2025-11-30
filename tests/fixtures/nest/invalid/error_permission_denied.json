@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": 403,
+    "message": "Permission denied for device.",
+    "status": "PERMISSION_DENIED"
+  }
+}

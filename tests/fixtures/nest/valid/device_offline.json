@@ -1,0 +1,34 @@
+{
+  "name": "enterprises/project-id/devices/device-id-5",
+  "type": "sdm.devices.types.THERMOSTAT",
+  "traits": {
+    "sdm.devices.traits.Info": {
+      "customName": "Garage Thermostat"
+    },
+    "sdm.devices.traits.Humidity": {
+      "ambientHumidityPercent": 40.0
+    },
+    "sdm.devices.traits.Connectivity": {
+      "status": "OFFLINE"
+    },
+    "sdm.devices.traits.ThermostatMode": {
+      "mode": "OFF",
+      "availableModes": ["HEAT", "COOL", "HEATCOOL", "OFF"]
+    },
+    "sdm.devices.traits.ThermostatEco": {
+      "availableModes": ["MANUAL_ECO", "OFF"],
+      "mode": "OFF",
+      "heatCelsius": 17.0,
+      "coolCelsius": 25.0
+    },
+    "sdm.devices.traits.ThermostatHvac": {
+      "status": "OFF"
+    },
+    "sdm.devices.traits.Settings": {
+      "temperatureScale": "CELSIUS"
+    },
+    "sdm.devices.traits.Temperature": {
+      "ambientTemperatureCelsius": 15.0
+    }
+  }
+}

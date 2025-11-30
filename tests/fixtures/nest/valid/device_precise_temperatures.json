@@ -1,0 +1,56 @@
+{
+  "name": "enterprises/project-id/devices/device-id-precise-temps",
+  "type": "sdm.devices.types.THERMOSTAT",
+  "traits": {
+    "sdm.devices.traits.Info": {
+      "customName": "Precise Temperature Monitor"
+    },
+    "sdm.devices.traits.Humidity": {
+      "ambientHumidityPercent": 47
+    },
+    "sdm.devices.traits.Connectivity": {
+      "status": "ONLINE"
+    },
+    "sdm.devices.traits.Fan": {
+      "timerMode": "ON",
+      "timerTimeout": "2024-12-01T10:30:00Z"
+    },
+    "sdm.devices.traits.ThermostatMode": {
+      "mode": "HEATCOOL",
+      "availableModes": [
+        "HEAT",
+        "COOL",
+        "HEATCOOL",
+        "OFF"
+      ]
+    },
+    "sdm.devices.traits.ThermostatEco": {
+      "availableModes": [
+        "OFF",
+        "MANUAL_ECO"
+      ],
+      "mode": "OFF",
+      "heatCelsius": 15.555556,
+      "coolCelsius": 23.888889
+    },
+    "sdm.devices.traits.ThermostatHvac": {
+      "status": "OFF"
+    },
+    "sdm.devices.traits.Settings": {
+      "temperatureScale": "CELSIUS"
+    },
+    "sdm.devices.traits.ThermostatTemperatureSetpoint": {
+      "heatCelsius": 18.333333,
+      "coolCelsius": 21.666667
+    },
+    "sdm.devices.traits.Temperature": {
+      "ambientTemperatureCelsius": 19.876543
+    }
+  },
+  "parentRelations": [
+    {
+      "parent": "enterprises/project-id/structures/structure-id/rooms/room-id",
+      "displayName": "Master Bedroom"
+    }
+  ]
+}

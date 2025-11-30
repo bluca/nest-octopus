@@ -1,0 +1,8 @@
+{
+  "access_token": "ya29.a0AfB_byAuthCode1234567890abcdefghijklmnopqrstuvwxyz",
+  "expires_in": 3599,
+  "refresh_token": "1//0gRefreshToken1234567890abcdefghijklmnopqrstuvwxyz",
+  "scope": "https://www.googleapis.com/auth/sdm.service",
+  "token_type": "Bearer",
+  "refresh_token_expires_in": 604799
+}

@@ -1,0 +1,8 @@
+{
+  "type": "sdm.devices.types.THERMOSTAT",
+  "traits": {
+    "sdm.devices.traits.ThermostatMode": {
+      "mode": "HEAT"
+    }
+  }
+}

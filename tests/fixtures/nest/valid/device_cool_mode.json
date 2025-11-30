@@ -1,0 +1,40 @@
+{
+  "name": "enterprises/project-id/devices/device-id-2",
+  "type": "sdm.devices.types.THERMOSTAT",
+  "traits": {
+    "sdm.devices.traits.Info": {
+      "customName": "Bedroom Thermostat"
+    },
+    "sdm.devices.traits.Humidity": {
+      "ambientHumidityPercent": 50.0
+    },
+    "sdm.devices.traits.Connectivity": {
+      "status": "ONLINE"
+    },
+    "sdm.devices.traits.Fan": {
+      "timerMode": "OFF"
+    },
+    "sdm.devices.traits.ThermostatMode": {
+      "mode": "COOL",
+      "availableModes": ["HEAT", "COOL", "HEATCOOL", "OFF"]
+    },
+    "sdm.devices.traits.ThermostatEco": {
+      "availableModes": ["MANUAL_ECO", "OFF"],
+      "mode": "OFF",
+      "heatCelsius": 17.0,
+      "coolCelsius": 25.0
+    },
+    "sdm.devices.traits.ThermostatHvac": {
+      "status": "COOLING"
+    },
+    "sdm.devices.traits.Settings": {
+      "temperatureScale": "CELSIUS"
+    },
+    "sdm.devices.traits.ThermostatTemperatureSetpoint": {
+      "coolCelsius": 22.0
+    },
+    "sdm.devices.traits.Temperature": {
+      "ambientTemperatureCelsius": 24.5
+    }
+  }
+}

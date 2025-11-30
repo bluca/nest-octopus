@@ -1,0 +1,9 @@
+{
+  "name": "enterprises/project-id/devices/device-id-incomplete",
+  "type": "sdm.devices.types.THERMOSTAT",
+  "traits": {
+    "sdm.devices.traits.Info": {
+      "customName": "Incomplete Thermostat"
+    }
+  }
+}

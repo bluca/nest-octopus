@@ -1,0 +1,5 @@
+{
+  "access_token": "token-with-short-expiry",
+  "expires_in": 300,
+  "token_type": "Bearer"
+}

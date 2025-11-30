@@ -1,0 +1,50 @@
+{
+  "devices": [
+    {
+      "name": "enterprises/project-id/devices/device-id-1",
+      "type": "sdm.devices.types.THERMOSTAT",
+      "traits": {
+        "sdm.devices.traits.Info": {
+          "customName": "Living Room Thermostat"
+        },
+        "sdm.devices.traits.Humidity": {
+          "ambientHumidityPercent": 45.0
+        },
+        "sdm.devices.traits.Connectivity": {
+          "status": "ONLINE"
+        },
+        "sdm.devices.traits.Fan": {
+          "timerMode": "OFF"
+        },
+        "sdm.devices.traits.ThermostatMode": {
+          "mode": "HEAT",
+          "availableModes": ["HEAT", "COOL", "HEATCOOL", "OFF"]
+        },
+        "sdm.devices.traits.ThermostatEco": {
+          "availableModes": ["MANUAL_ECO", "OFF"],
+          "mode": "OFF",
+          "heatCelsius": 17.0,
+          "coolCelsius": 25.0
+        },
+        "sdm.devices.traits.ThermostatHvac": {
+          "status": "HEATING"
+        },
+        "sdm.devices.traits.Settings": {
+          "temperatureScale": "CELSIUS"
+        },
+        "sdm.devices.traits.ThermostatTemperatureSetpoint": {
+          "heatCelsius": 20.0
+        },
+        "sdm.devices.traits.Temperature": {
+          "ambientTemperatureCelsius": 18.5
+        }
+      },
+      "parentRelations": [
+        {
+          "parent": "enterprises/project-id/structures/structure-id/rooms/room-id",
+          "displayName": "Living Room"
+        }
+      ]
+    }
+  ]
+}

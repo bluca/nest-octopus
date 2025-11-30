@@ -1,0 +1,12 @@
+{
+  "name": "enterprises/project-id/devices/device-bad-type",
+  "type": "sdm.devices.types.THERMOSTAT",
+  "traits": {
+    "sdm.devices.traits.ThermostatMode": {
+      "mode": "INVALID_MODE"
+    },
+    "sdm.devices.traits.Temperature": {
+      "ambientTemperatureCelsius": 20.0
+    }
+  }
+}

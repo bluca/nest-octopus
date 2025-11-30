@@ -1,0 +1,5 @@
+{
+  "access_token": "minimal-access-token-from-auth-code",
+  "expires_in": 3600,
+  "refresh_token": "minimal-refresh-token"
+}

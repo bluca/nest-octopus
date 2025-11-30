@@ -1,0 +1,51 @@
+{
+  "name": "enterprises/2a4g7e4d-8743-1234-5677-73c009871234/devices/abcdefghilmn",
+  "type": "sdm.devices.types.THERMOSTAT",
+  "assignee": "enterprises/2a4g7e4d-8743-1234-5677-73c009871234/structures/abcdeuhieidhihaidhaisudhs/rooms/AUSHDOIhdisahIASHOHdsioahdoHAIOSUDHOIh",
+  "traits": {
+    "sdm.devices.traits.Info": {
+      "customName": ""
+    },
+    "sdm.devices.traits.Humidity": {
+      "ambientHumidityPercent": 52
+    },
+    "sdm.devices.traits.Connectivity": {
+      "status": "ONLINE"
+    },
+    "sdm.devices.traits.Fan": {},
+    "sdm.devices.traits.ThermostatMode": {
+      "mode": "HEAT",
+      "availableModes": [
+        "HEAT",
+        "OFF"
+      ]
+    },
+    "sdm.devices.traits.ThermostatEco": {
+      "availableModes": [
+        "OFF",
+        "MANUAL_ECO"
+      ],
+      "mode": "OFF",
+      "heatCelsius": 7.816208,
+      "coolCelsius": 24.444443
+    },
+    "sdm.devices.traits.ThermostatHvac": {
+      "status": "OFF"
+    },
+    "sdm.devices.traits.Settings": {
+      "temperatureScale": "CELSIUS"
+    },
+    "sdm.devices.traits.ThermostatTemperatureSetpoint": {
+      "heatCelsius": 16.906097
+    },
+    "sdm.devices.traits.Temperature": {
+      "ambientTemperatureCelsius": 16.769989
+    }
+  },
+  "parentRelations": [
+    {
+      "parent": "enterprises/2a4g7e4d-8743-1234-5677-73c009871234/structures/abcdeuhieidhihaidhaisudhs/rooms/AUSHDOIhdisahIASHOHdsioahdoHAIOSUDHOIh",
+      "displayName": "Hallway"
+    }
+  ]
+}

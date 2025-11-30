@@ -1,0 +1,49 @@
+{
+  "name": "enterprises/project-id/devices/device-id-limited-modes",
+  "type": "sdm.devices.types.THERMOSTAT",
+  "traits": {
+    "sdm.devices.traits.Info": {
+      "customName": "Heat Only Thermostat"
+    },
+    "sdm.devices.traits.Humidity": {
+      "ambientHumidityPercent": 48
+    },
+    "sdm.devices.traits.Connectivity": {
+      "status": "ONLINE"
+    },
+    "sdm.devices.traits.Fan": {},
+    "sdm.devices.traits.ThermostatMode": {
+      "mode": "HEAT",
+      "availableModes": [
+        "HEAT",
+        "OFF"
+      ]
+    },
+    "sdm.devices.traits.ThermostatEco": {
+      "availableModes": [
+        "OFF"
+      ],
+      "mode": "OFF",
+      "heatCelsius": 10.0,
+      "coolCelsius": 28.0
+    },
+    "sdm.devices.traits.ThermostatHvac": {
+      "status": "HEATING"
+    },
+    "sdm.devices.traits.Settings": {
+      "temperatureScale": "CELSIUS"
+    },
+    "sdm.devices.traits.ThermostatTemperatureSetpoint": {
+      "heatCelsius": 19.5
+    },
+    "sdm.devices.traits.Temperature": {
+      "ambientTemperatureCelsius": 17.8
+    }
+  },
+  "parentRelations": [
+    {
+      "parent": "enterprises/project-id/structures/structure-id/rooms/room-id",
+      "displayName": "Basement"
+    }
+  ]
+}

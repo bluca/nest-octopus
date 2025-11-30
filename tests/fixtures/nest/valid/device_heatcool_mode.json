@@ -1,0 +1,41 @@
+{
+  "name": "enterprises/project-id/devices/device-id-3",
+  "type": "sdm.devices.types.THERMOSTAT",
+  "traits": {
+    "sdm.devices.traits.Info": {
+      "customName": "Office Thermostat"
+    },
+    "sdm.devices.traits.Humidity": {
+      "ambientHumidityPercent": 48.0
+    },
+    "sdm.devices.traits.Connectivity": {
+      "status": "ONLINE"
+    },
+    "sdm.devices.traits.Fan": {
+      "timerMode": "OFF"
+    },
+    "sdm.devices.traits.ThermostatMode": {
+      "mode": "HEATCOOL",
+      "availableModes": ["HEAT", "COOL", "HEATCOOL", "OFF"]
+    },
+    "sdm.devices.traits.ThermostatEco": {
+      "availableModes": ["MANUAL_ECO", "OFF"],
+      "mode": "OFF",
+      "heatCelsius": 17.0,
+      "coolCelsius": 25.0
+    },
+    "sdm.devices.traits.ThermostatHvac": {
+      "status": "OFF"
+    },
+    "sdm.devices.traits.Settings": {
+      "temperatureScale": "CELSIUS"
+    },
+    "sdm.devices.traits.ThermostatTemperatureSetpoint": {
+      "heatCelsius": 18.0,
+      "coolCelsius": 24.0
+    },
+    "sdm.devices.traits.Temperature": {
+      "ambientTemperatureCelsius": 21.0
+    }
+  }
+}

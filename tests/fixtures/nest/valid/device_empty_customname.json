@@ -1,0 +1,51 @@
+{
+  "name": "enterprises/project-id/devices/device-id-empty-name",
+  "type": "sdm.devices.types.THERMOSTAT",
+  "assignee": "enterprises/project-id/structures/structure-id/rooms/room-id",
+  "traits": {
+    "sdm.devices.traits.Info": {
+      "customName": ""
+    },
+    "sdm.devices.traits.Humidity": {
+      "ambientHumidityPercent": 52
+    },
+    "sdm.devices.traits.Connectivity": {
+      "status": "ONLINE"
+    },
+    "sdm.devices.traits.Fan": {},
+    "sdm.devices.traits.ThermostatMode": {
+      "mode": "HEAT",
+      "availableModes": [
+        "HEAT",
+        "OFF"
+      ]
+    },
+    "sdm.devices.traits.ThermostatEco": {
+      "availableModes": [
+        "OFF",
+        "MANUAL_ECO"
+      ],
+      "mode": "OFF",
+      "heatCelsius": 7.816208,
+      "coolCelsius": 24.444443
+    },
+    "sdm.devices.traits.ThermostatHvac": {
+      "status": "OFF"
+    },
+    "sdm.devices.traits.Settings": {
+      "temperatureScale": "CELSIUS"
+    },
+    "sdm.devices.traits.ThermostatTemperatureSetpoint": {
+      "heatCelsius": 16.906097
+    },
+    "sdm.devices.traits.Temperature": {
+      "ambientTemperatureCelsius": 16.769989
+    }
+  },
+  "parentRelations": [
+    {
+      "parent": "enterprises/project-id/structures/structure-id/rooms/room-id",
+      "displayName": "Hallway"
+    }
+  ]
+}

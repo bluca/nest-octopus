@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": 400,
+    "message": "Cannot set heat setpoint in COOL mode.",
+    "status": "FAILED_PRECONDITION"
+  }
+}
