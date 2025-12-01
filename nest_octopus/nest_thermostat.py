@@ -101,23 +101,22 @@ class NestThermostatClient:
     """
     Client for interacting with Google Nest thermostats via SDM API.
 
-    Automatically manages OAuth2 token lifecycle using an authorization code.
-    On first use, exchanges the authorization code for a refresh token.
-    Then automatically refreshes access tokens as needed.
+    Automatically manages OAuth2 token lifecycle and device selection.
+    On initialization, queries available devices and automatically selects:
+    - If only one device exists, it is automatically selected
+    - If multiple devices exist, requires display_name parameter to select device
 
     Attributes:
         base_url (str): The base URL of the SDM API
         project_id (str): Google Cloud project ID
         client_id (str): OAuth 2.0 client ID
         client_secret (str): OAuth 2.0 client secret
-        authorization_code (str): OAuth 2.0 authorization code
-        redirect_uri (str): OAuth 2.0 redirect URI
-        refresh_token (str): OAuth 2.0 refresh token (obtained from auth code)
-        refresh_token_expiry (datetime): When the refresh token expires
+        refresh_token (str): OAuth 2.0 refresh token
         timeout (int): Request timeout in seconds
         session (requests.Session): HTTP session for connection pooling
         access_token (str): Current OAuth 2.0 access token (auto-refreshed)
         token_expiry (datetime): When the current access token expires
+        device_id (str): Selected device ID (auto-selected on init)
     """
 
     BASE_URL = "https://smartdevicemanagement.googleapis.com/v1"
@@ -125,6 +124,7 @@ class NestThermostatClient:
 
     def __init__(self, project_id: str, refresh_token: str,
                  client_id: str, client_secret: str,
+                 display_name: Optional[str] = None,
                  timeout: int = 30):
         """
         Initialize the Nest Thermostat API client.
@@ -134,7 +134,11 @@ class NestThermostatClient:
             refresh_token: OAuth 2.0 refresh token
             client_id: OAuth 2.0 client ID
             client_secret: OAuth 2.0 client secret
+            display_name: Device display name (required if multiple devices)
             timeout: Request timeout in seconds (default: 30)
+
+        Raises:
+            NestAPIError: If device selection fails or no devices found
         """
         self.base_url = self.BASE_URL
         self.project_id = project_id
@@ -153,6 +157,9 @@ class NestThermostatClient:
 
         # Get initial access token
         self._ensure_valid_token()
+
+        # Auto-select device
+        self.device_id = self._select_device(display_name)
 
     def _refresh_access_token(self):
         """
@@ -223,6 +230,58 @@ class NestThermostatClient:
         if self.token_expiry is None or datetime.now() >= self.token_expiry:
             logger.debug("Access token expired or about to expire, refreshing")
             self._refresh_access_token()
+
+    def _select_device(self, display_name: Optional[str] = None) -> str:
+        """
+        Query available devices and select one.
+
+        Args:
+            display_name: Device display name to match (required if multiple devices)
+
+        Returns:
+            Selected device ID
+
+        Raises:
+            NestAPIError: If no devices found or selection fails
+        """
+        devices = self.list_devices()
+
+        if not devices:
+            raise NestAPIError("No devices found in project")
+
+        # If only one device, auto-select it
+        if len(devices) == 1:
+            device_id = devices[0]['name']
+            logger.info(f"Auto-selected single device: {device_id}")
+            return device_id
+
+        # Multiple devices - need display_name to select
+        if not display_name:
+            raise NestAPIError(
+                f"Multiple devices found ({len(devices)}). "
+                "Please provide display_name parameter to select device."
+            )
+
+        # Find device by display name
+        for device in devices:
+            parent_relations = device.get('parentRelations', [])
+            for relation in parent_relations:
+                if relation.get('displayName') == display_name:
+                    device_id = device['name']
+                    logger.info(f"Selected device '{display_name}': {device_id}")
+                    return device_id
+
+        # Not found
+        available = []
+        for device in devices:
+            for relation in device.get('parentRelations', []):
+                if 'displayName' in relation:
+                    available.append(relation['displayName'])
+
+        raise NestAPIError(
+            f"Device with display name '{display_name}' not found. "
+            f"Available: {', '.join(available)}"
+        )
 
     def _is_token_expired_error(self, response) -> bool:
         """
@@ -303,12 +362,12 @@ class NestThermostatClient:
             logger.error(error_msg)
             raise NestAPIError(error_msg)
 
-    def get_device(self, device_id: str) -> ThermostatStatus:
+    def get_device(self, device_id: Optional[str] = None) -> ThermostatStatus:
         """
-        Get detailed information about a specific device.
+        Get detailed information about a device.
 
         Args:
-            device_id: Full device ID (enterprises/{project}/devices/{device})
+            device_id: Full device ID (optional, uses auto-selected device if not provided)
 
         Returns:
             ThermostatStatus object with current device state
@@ -316,6 +375,9 @@ class NestThermostatClient:
         Raises:
             NestAPIError: If the request fails
         """
+        if device_id is None:
+            device_id = self.device_id
+
         self._ensure_valid_token()
         url = f"{self.base_url}/{device_id}"
 
@@ -365,13 +427,13 @@ class NestThermostatClient:
             logger.error(error_msg)
             raise NestAPIError(error_msg)
 
-    def set_mode(self, device_id: str, mode: ThermostatMode) -> Dict[str, Any]:
+    def set_mode(self, mode: ThermostatMode, device_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Set the thermostat operating mode.
 
         Args:
-            device_id: Full device ID
             mode: Target thermostat mode (HEAT, COOL, HEATCOOL, or OFF)
+            device_id: Full device ID (optional, uses auto-selected device if not provided)
 
         Returns:
             API response dictionary
@@ -379,18 +441,21 @@ class NestThermostatClient:
         Raises:
             NestAPIError: If the request fails
         """
+        if device_id is None:
+            device_id = self.device_id
+
         command = "sdm.devices.commands.ThermostatMode.SetMode"
         params = {"mode": mode.value}
 
         return self._execute_command(device_id, command, params)
 
-    def set_eco_mode(self, device_id: str, eco_mode: EcoMode) -> Dict[str, Any]:
+    def set_eco_mode(self, eco_mode: EcoMode, device_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Set the thermostat eco mode.
 
         Args:
-            device_id: Full device ID
             eco_mode: Target eco mode (MANUAL_ECO or OFF)
+            device_id: Full device ID (optional, uses auto-selected device if not provided)
 
         Returns:
             API response dictionary
@@ -398,18 +463,21 @@ class NestThermostatClient:
         Raises:
             NestAPIError: If the request fails
         """
+        if device_id is None:
+            device_id = self.device_id
+
         command = "sdm.devices.commands.ThermostatEco.SetMode"
         params = {"mode": eco_mode.value}
 
         return self._execute_command(device_id, command, params)
 
-    def set_heat(self, device_id: str, temperature_celsius: float) -> Dict[str, Any]:
+    def set_heat(self, temperature_celsius: float, device_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Set the heat setpoint (thermostat must be in HEAT mode).
 
         Args:
-            device_id: Full device ID
             temperature_celsius: Target temperature in Celsius
+            device_id: Full device ID (optional, uses auto-selected device if not provided)
 
         Returns:
             API response dictionary
@@ -417,18 +485,21 @@ class NestThermostatClient:
         Raises:
             NestAPIError: If the request fails or thermostat not in HEAT mode
         """
+        if device_id is None:
+            device_id = self.device_id
+
         command = "sdm.devices.commands.ThermostatTemperatureSetpoint.SetHeat"
         params = {"heatCelsius": temperature_celsius}
 
         return self._execute_command(device_id, command, params)
 
-    def set_cool(self, device_id: str, temperature_celsius: float) -> Dict[str, Any]:
+    def set_cool(self, temperature_celsius: float, device_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Set the cool setpoint (thermostat must be in COOL mode).
 
         Args:
-            device_id: Full device ID
             temperature_celsius: Target temperature in Celsius
+            device_id: Full device ID (optional, uses auto-selected device if not provided)
 
         Returns:
             API response dictionary
@@ -436,20 +507,23 @@ class NestThermostatClient:
         Raises:
             NestAPIError: If the request fails or thermostat not in COOL mode
         """
+        if device_id is None:
+            device_id = self.device_id
+
         command = "sdm.devices.commands.ThermostatTemperatureSetpoint.SetCool"
         params = {"coolCelsius": temperature_celsius}
 
         return self._execute_command(device_id, command, params)
 
-    def set_range(self, device_id: str, heat_celsius: float,
-                  cool_celsius: float) -> Dict[str, Any]:
+    def set_range(self, heat_celsius: float,
+                  cool_celsius: float, device_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Set the heat and cool setpoints (thermostat must be in HEATCOOL mode).
 
         Args:
-            device_id: Full device ID
             heat_celsius: Heat setpoint in Celsius
             cool_celsius: Cool setpoint in Celsius (must be > heat_celsius)
+            device_id: Full device ID (optional, uses auto-selected device if not provided)
 
         Returns:
             API response dictionary
@@ -457,6 +531,9 @@ class NestThermostatClient:
         Raises:
             NestAPIError: If the request fails or invalid temperature range
         """
+        if device_id is None:
+            device_id = self.device_id
+
         command = "sdm.devices.commands.ThermostatTemperatureSetpoint.SetRange"
         params = {
             "heatCelsius": heat_celsius,
@@ -465,15 +542,16 @@ class NestThermostatClient:
 
         return self._execute_command(device_id, command, params)
 
-    def set_fan(self, device_id: str, mode: FanMode,
-                duration_seconds: Optional[int] = None) -> Dict[str, Any]:
+    def set_fan(self, mode: FanMode,
+                duration_seconds: Optional[int] = None,
+                device_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Set the fan timer.
 
         Args:
-            device_id: Full device ID
             mode: FanMode.ON or FanMode.OFF
             duration_seconds: How long to run fan (default 900s/15min if ON)
+            device_id: Full device ID (optional, uses auto-selected device if not provided)
 
         Returns:
             API response dictionary
@@ -481,6 +559,9 @@ class NestThermostatClient:
         Raises:
             NestAPIError: If the request fails or thermostat has no fan
         """
+        if device_id is None:
+            device_id = self.device_id
+
         command = "sdm.devices.commands.Fan.SetTimer"
         params = {"timerMode": mode.value}
 

@@ -65,6 +65,18 @@ def mock_token_refresh():
         yield mock_post
 
 
+@pytest.fixture
+def mock_device_selection():
+    """
+    Mock _select_device during client initialization to prevent network calls.
+    Returns a test device ID by default.
+    """
+    test_device_id = 'enterprises/test-project/devices/test-device-123'
+
+    with patch('nest_octopus.nest_thermostat.NestThermostatClient._select_device', return_value=test_device_id):
+        yield
+
+
 def load_fixture(filename: str) -> dict:
     """
     Load a JSON fixture file.
@@ -105,6 +117,7 @@ def create_test_client():
     )
 
 
+@pytest.mark.usefixtures("mock_device_selection")
 class TestThermostatStatus:
     """Test the ThermostatStatus dataclass."""
 
@@ -166,6 +179,7 @@ class TestThermostatStatus:
         assert status.mode == "OFF"
 
 
+@pytest.mark.usefixtures("mock_device_selection")
 class TestNestThermostatClientInit:
     """Test NestThermostatClient initialization."""
 
@@ -217,6 +231,192 @@ class TestNestThermostatClientInit:
         assert client.token_expiry is not None
 
 
+class TestDeviceSelection:
+    """Test automatic device selection during initialization."""
+
+    @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
+    def test_single_device_auto_selected(self, mock_list_devices):
+        """Test that a single device is automatically selected."""
+        single_device = [{
+            'name': 'enterprises/test-project/devices/device-123',
+            'type': 'sdm.devices.types.THERMOSTAT',
+            'traits': {},
+            'parentRelations': [{
+                'parent': 'enterprises/test-project/structures/structure-1',
+                'displayName': 'Living Room'
+            }]
+        }]
+        mock_list_devices.return_value = single_device
+
+        client = NestThermostatClient(
+            project_id="test-project",
+            refresh_token="test-refresh-token",
+            client_id="test-client-id",
+            client_secret="test-client-secret"
+        )
+
+        assert client.device_id == 'enterprises/test-project/devices/device-123'
+        mock_list_devices.assert_called_once()
+
+    @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
+    def test_multiple_devices_with_display_name(self, mock_list_devices):
+        """Test device selection with multiple devices using display_name."""
+        multiple_devices = [
+            {
+                'name': 'enterprises/test-project/devices/device-123',
+                'type': 'sdm.devices.types.THERMOSTAT',
+                'traits': {},
+                'parentRelations': [{
+                    'parent': 'enterprises/test-project/structures/structure-1',
+                    'displayName': 'Living Room'
+                }]
+            },
+            {
+                'name': 'enterprises/test-project/devices/device-456',
+                'type': 'sdm.devices.types.THERMOSTAT',
+                'traits': {},
+                'parentRelations': [{
+                    'parent': 'enterprises/test-project/structures/structure-1',
+                    'displayName': 'Bedroom'
+                }]
+            },
+            {
+                'name': 'enterprises/test-project/devices/device-789',
+                'type': 'sdm.devices.types.THERMOSTAT',
+                'traits': {},
+                'parentRelations': [{
+                    'parent': 'enterprises/test-project/structures/structure-1',
+                    'displayName': 'Hallway'
+                }]
+            }
+        ]
+        mock_list_devices.return_value = multiple_devices
+
+        client = NestThermostatClient(
+            project_id="test-project",
+            refresh_token="test-refresh-token",
+            client_id="test-client-id",
+            client_secret="test-client-secret",
+            display_name="Bedroom"
+        )
+
+        assert client.device_id == 'enterprises/test-project/devices/device-456'
+        mock_list_devices.assert_called_once()
+
+    @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
+    def test_multiple_devices_without_display_name_raises_error(self, mock_list_devices):
+        """Test that missing display_name with multiple devices raises error."""
+        multiple_devices = [
+            {
+                'name': 'enterprises/test-project/devices/device-123',
+                'type': 'sdm.devices.types.THERMOSTAT',
+                'traits': {},
+                'parentRelations': [{
+                    'parent': 'enterprises/test-project/structures/structure-1',
+                    'displayName': 'Living Room'
+                }]
+            },
+            {
+                'name': 'enterprises/test-project/devices/device-456',
+                'type': 'sdm.devices.types.THERMOSTAT',
+                'traits': {},
+                'parentRelations': [{
+                    'parent': 'enterprises/test-project/structures/structure-1',
+                    'displayName': 'Bedroom'
+                }]
+            }
+        ]
+        mock_list_devices.return_value = multiple_devices
+
+        with pytest.raises(NestAPIError, match="Multiple devices found.*Please provide display_name"):
+            NestThermostatClient(
+                project_id="test-project",
+                refresh_token="test-refresh-token",
+                client_id="test-client-id",
+                client_secret="test-client-secret"
+            )
+
+    @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
+    def test_display_name_not_found_raises_error(self, mock_list_devices):
+        """Test that invalid display_name raises error with available options."""
+        multiple_devices = [
+            {
+                'name': 'enterprises/test-project/devices/device-123',
+                'type': 'sdm.devices.types.THERMOSTAT',
+                'traits': {},
+                'parentRelations': [{
+                    'parent': 'enterprises/test-project/structures/structure-1',
+                    'displayName': 'Living Room'
+                }]
+            },
+            {
+                'name': 'enterprises/test-project/devices/device-456',
+                'type': 'sdm.devices.types.THERMOSTAT',
+                'traits': {},
+                'parentRelations': [{
+                    'parent': 'enterprises/test-project/structures/structure-1',
+                    'displayName': 'Bedroom'
+                }]
+            }
+        ]
+        mock_list_devices.return_value = multiple_devices
+
+        with pytest.raises(NestAPIError, match="Device with display name 'Kitchen' not found.*Available: Living Room, Bedroom"):
+            NestThermostatClient(
+                project_id="test-project",
+                refresh_token="test-refresh-token",
+                client_id="test-client-id",
+                client_secret="test-client-secret",
+                display_name="Kitchen"
+            )
+
+    @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
+    def test_no_devices_raises_error(self, mock_list_devices):
+        """Test that no devices raises error."""
+        mock_list_devices.return_value = []
+
+        with pytest.raises(NestAPIError, match="No devices found in project"):
+            NestThermostatClient(
+                project_id="test-project",
+                refresh_token="test-refresh-token",
+                client_id="test-client-id",
+                client_secret="test-client-secret"
+            )
+
+    @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
+    def test_multiple_parent_relations_matches_first(self, mock_list_devices):
+        """Test device with multiple parent relations matches on first matching displayName."""
+        devices = [
+            {
+                'name': 'enterprises/test-project/devices/device-123',
+                'type': 'sdm.devices.types.THERMOSTAT',
+                'traits': {},
+                'parentRelations': [
+                    {
+                        'parent': 'enterprises/test-project/structures/structure-1/rooms/room-1',
+                        'displayName': 'Main Floor'
+                    },
+                    {
+                        'parent': 'enterprises/test-project/structures/structure-1',
+                        'displayName': 'Home'
+                    }
+                ]
+            }
+        ]
+        mock_list_devices.return_value = devices
+
+        client = NestThermostatClient(
+            project_id="test-project",
+            refresh_token="test-refresh-token",
+            client_id="test-client-id",
+            client_secret="test-client-secret",
+            display_name="Main Floor"
+        )
+
+        assert client.device_id == 'enterprises/test-project/devices/device-123'
+
+
+@pytest.mark.usefixtures("mock_device_selection")
 class TestOAuth2TokenRefresh:
     """Test OAuth2 token refresh functionality."""
 
@@ -353,6 +553,7 @@ class TestOAuth2TokenRefresh:
         assert "400" in str(exc_info.value)
 
 
+@pytest.mark.usefixtures("mock_device_selection")
 class TestExpiredTokenHandling:
     """Test automatic handling of expired tokens during API calls."""
 
@@ -448,7 +649,7 @@ class TestExpiredTokenHandling:
         mock_get.side_effect = [expired_response, success_response]
 
         client = create_test_client()
-        status = client.get_device("enterprises/project-id/devices/device-id-1")
+        status = client.get_device(device_id="enterprises/project-id/devices/device-id-1")
 
         # Verify that we got the device status after retry
         assert status.device_id == "enterprises/project-id/devices/device-id-1"
@@ -499,7 +700,7 @@ class TestExpiredTokenHandling:
             mock_session_post.side_effect = [expired_response, success_response]
 
             client = create_test_client()
-            result = client.set_mode("enterprises/project-id/devices/device-id-1", ThermostatMode.COOL)
+            result = client.set_mode(ThermostatMode.COOL, device_id="enterprises/project-id/devices/device-id-1")
 
             # Verify command succeeded after retry
             assert result == {}
@@ -547,7 +748,7 @@ class TestExpiredTokenHandling:
             mock_session_post.side_effect = [expired_response, success_response]
 
             client = create_test_client()
-            result = client.set_heat("enterprises/project-id/devices/device-id-1", 22.0)
+            result = client.set_heat(22.0, device_id="enterprises/project-id/devices/device-id-1")
 
             # Verify command succeeded after retry
             assert result == {}
@@ -593,7 +794,7 @@ class TestExpiredTokenHandling:
             mock_session_post.side_effect = [expired_response, success_response]
 
             client = create_test_client()
-            result = client.set_fan("enterprises/project-id/devices/device-id-1", FanMode.ON, 900)
+            result = client.set_fan(FanMode.ON, duration_seconds=900, device_id="enterprises/project-id/devices/device-id-1")
 
             # Verify command succeeded after retry
             assert result == {}
@@ -683,6 +884,7 @@ class TestExpiredTokenHandling:
         assert mock_get.call_count == 1
 
 
+@pytest.mark.usefixtures("mock_device_selection")
 class TestListDevices:
     """Test listing devices."""
 
@@ -766,6 +968,7 @@ class TestListDevices:
         assert "403" in str(exc_info.value)
 
 
+@pytest.mark.usefixtures("mock_device_selection")
 class TestGetDevice:
     """Test getting a specific device."""
 
@@ -779,7 +982,7 @@ class TestGetDevice:
         mock_get.return_value = mock_response
 
         client = create_test_client()
-        status = client.get_device("device-id-1")
+        status = client.get_device(device_id="device-id-1")
 
         assert status.device_id == "enterprises/project-id/devices/device-id-1"
         assert status.mode == "HEAT"
@@ -808,7 +1011,7 @@ class TestGetDevice:
         client = create_test_client()
 
         with pytest.raises(NestAPIError) as exc_info:
-            client.get_device("nonexistent-device")
+            client.get_device(device_id="nonexistent-device")
 
         assert "404" in str(exc_info.value)
 
@@ -831,10 +1034,11 @@ class TestGetDevice:
             mock_response.raise_for_status.return_value = None
             mock_get.return_value = mock_response
 
-            status = client.get_device("test-device")
+            status = client.get_device(device_id="test-device")
             assert status.mode == expected_mode
 
 
+@pytest.mark.usefixtures("mock_device_selection")
 class TestSetMode:
     """Test setting thermostat mode."""
 
@@ -848,7 +1052,7 @@ class TestSetMode:
         mock_post.return_value = mock_response
 
         client = create_test_client()
-        client.set_mode("device-id-1", ThermostatMode.HEAT)
+        client.set_mode(ThermostatMode.HEAT, device_id="device-id-1")
 
         # Verify the API call
         mock_post.assert_called_once()
@@ -871,7 +1075,7 @@ class TestSetMode:
         client = create_test_client()
 
         for mode in ThermostatMode:
-            client.set_mode("device-id", mode)
+            client.set_mode(mode, device_id="device-id")
 
             request_json = mock_post.call_args[1]["json"]
             assert request_json["params"]["mode"] == mode.value
@@ -886,7 +1090,7 @@ class TestSetMode:
         mock_post.return_value = mock_response
 
         client = create_test_client()
-        client.set_eco_mode("device-id-1", EcoMode.MANUAL_ECO)
+        client.set_eco_mode(EcoMode.MANUAL_ECO, device_id="device-id-1")
 
         # Verify the API call
         request_json = mock_post.call_args[1]["json"]
@@ -894,6 +1098,7 @@ class TestSetMode:
         assert request_json["params"]["mode"] == "MANUAL_ECO"
 
 
+@pytest.mark.usefixtures("mock_device_selection")
 class TestSetTemperature:
     """Test setting temperature setpoints."""
 
@@ -907,7 +1112,7 @@ class TestSetTemperature:
         mock_post.return_value = mock_response
 
         client = create_test_client()
-        client.set_heat("device-id-1", 20.5)
+        client.set_heat(20.5, device_id="device-id-1")
 
         # Verify the API call
         request_json = mock_post.call_args[1]["json"]
@@ -924,7 +1129,7 @@ class TestSetTemperature:
         mock_post.return_value = mock_response
 
         client = create_test_client()
-        client.set_cool("device-id-1", 24.0)
+        client.set_cool(24.0, device_id="device-id-1")
 
         # Verify the API call
         request_json = mock_post.call_args[1]["json"]
@@ -941,7 +1146,7 @@ class TestSetTemperature:
         mock_post.return_value = mock_response
 
         client = create_test_client()
-        client.set_range("device-id-1", 18.0, 24.0)
+        client.set_range(18.0, 24.0, device_id="device-id-1")
 
         # Verify the API call
         request_json = mock_post.call_args[1]["json"]
@@ -967,7 +1172,7 @@ class TestSetTemperature:
         client = create_test_client()
 
         with pytest.raises(NestAPIError) as exc_info:
-            client.set_heat("device-id-1", 20.0)
+            client.set_heat(20.0, device_id="device-id-1")
 
         assert "400" in str(exc_info.value)
 
@@ -989,11 +1194,12 @@ class TestSetTemperature:
         client = create_test_client()
 
         with pytest.raises(NestAPIError) as exc_info:
-            client.set_range("device-id-1", 25.0, 18.0)  # Heat > Cool
+            client.set_range(25.0, 18.0, device_id="device-id-1")  # Heat > Cool
 
         assert "400" in str(exc_info.value)
 
 
+@pytest.mark.usefixtures("mock_device_selection")
 class TestSetFan:
     """Test setting fan mode."""
 
@@ -1007,7 +1213,7 @@ class TestSetFan:
         mock_post.return_value = mock_response
 
         client = create_test_client()
-        client.set_fan("device-id-1", FanMode.ON, duration_seconds=900)
+        client.set_fan(FanMode.ON, duration_seconds=900, device_id="device-id-1")
 
         # Verify the API call
         request_json = mock_post.call_args[1]["json"]
@@ -1025,7 +1231,7 @@ class TestSetFan:
         mock_post.return_value = mock_response
 
         client = create_test_client()
-        client.set_fan("device-id-1", FanMode.OFF)
+        client.set_fan(FanMode.OFF, device_id="device-id-1")
 
         # Verify the API call
         request_json = mock_post.call_args[1]["json"]
@@ -1034,6 +1240,7 @@ class TestSetFan:
         assert "duration" not in request_json["params"]
 
 
+@pytest.mark.usefixtures("mock_device_selection")
 class TestValidFixtures:
     """Test that all valid fixtures can be parsed correctly."""
 
@@ -1102,6 +1309,7 @@ class TestValidFixtures:
         assert status.cool_setpoint is None
 
 
+@pytest.mark.usefixtures("mock_device_selection")
 class TestInvalidFixtures:
     """Test that invalid fixtures are handled correctly."""
 
@@ -1137,6 +1345,7 @@ class TestInvalidFixtures:
             pass
 
 
+@pytest.mark.usefixtures("mock_device_selection")
 class TestNoNetworkAccess:
     """Verify that tests never access the network."""
 
@@ -1155,7 +1364,7 @@ class TestNoNetworkAccess:
         mock_get.return_value = mock_response
 
         client = create_test_client()
-        status = client.get_device("device-id")
+        status = client.get_device(device_id="device-id")
 
         # Verify the mock was called
         assert mock_get.called

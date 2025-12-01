@@ -532,8 +532,7 @@ def calculate_heating_schedule(
 
 def execute_heating_action(
     action: HeatingAction,
-    client: NestThermostatClient,
-    device_id: str
+    client: NestThermostatClient
 ) -> None:
     """
     Execute a heating action on the thermostat.
@@ -543,12 +542,11 @@ def execute_heating_action(
 
     Args:
         action: The heating action to execute
-        client: Nest thermostat client
-        device_id: Device ID of the thermostat
+        client: Nest thermostat client (device already selected)
     """
     try:
         # Check current thermostat mode
-        status = client.get_device(device_id)
+        status = client.get_device()
         current_mode = status.mode
 
         # Only proceed if thermostat is in HEAT or HEATCOOL mode
@@ -562,49 +560,24 @@ def execute_heating_action(
         if action.eco_mode:
             logger.info(f"Enabling ECO mode: {action.reason}")
             notify(b"STATUS=Enabling ECO mode")
-            client.set_eco_mode(device_id, EcoMode.MANUAL_ECO)
+            client.set_eco_mode(EcoMode.MANUAL_ECO)
         else:
             # First disable ECO mode if it's on
             logger.info(f"Disabling ECO mode")
             notify(b"STATUS=Disabling ECO mode")
-            client.set_eco_mode(device_id, EcoMode.OFF)
+            client.set_eco_mode(EcoMode.OFF)
 
             # Only set temperature if specified (temperature=None means just turn off ECO)
             if action.temperature is not None:
                 logger.info(f"Setting temperature to {action.temperature}°C: {action.reason}")
                 # Set the temperature
-                client.set_heat(device_id, action.temperature)
+                client.set_heat(action.temperature)
                 notify(f"STATUS=Set temperature to {action.temperature}°C".encode())
             else:
                 logger.info(f"ECO mode disabled: {action.reason}")
     except Exception as e:
         logger.error(f"Failed to execute heating action: {e}")
         raise
-
-
-def find_thermostat(client: NestThermostatClient, name: str) -> str:
-    """
-    Find thermostat device ID by name.
-
-    Args:
-        client: Nest thermostat client
-        name: Device name to search for (matches customName or partial device ID)
-
-    Returns:
-        Device ID
-
-    Raises:
-        ValueError: If thermostat not found
-    """
-    devices = client.list_devices()
-
-    for device in devices:
-        # Check if name matches device ID or custom name
-        if name in device.device_id or name.lower() in device.device_id.lower():
-            logger.debug(f"Found thermostat: {device.device_id}")
-            return device.device_id
-
-    raise ValueError(f"Thermostat '{name}' not found")
 
 
 def run_daily_cycle(config: Config) -> None:
@@ -633,12 +606,13 @@ def run_daily_cycle(config: Config) -> None:
         project_id=config.project_id,
         refresh_token=config.refresh_token,
         client_id=config.client_id,
-        client_secret=config.client_secret
+        client_secret=config.client_secret,
+        display_name=config.thermostat_name  # Used for device selection
     )
 
     try:
-        # Find the thermostat
-        device_id = find_thermostat(nest, config.thermostat_name)
+        # Device auto-selected during client initialization
+        logger.debug(f"Using thermostat: {nest.device_id}")
 
         # Fetch prices for next 24 hours
         now = datetime.now()
@@ -692,7 +666,7 @@ def run_daily_cycle(config: Config) -> None:
                 time.sleep(sleep_seconds)
 
             # Execute the action
-            execute_heating_action(action, nest, device_id)
+            execute_heating_action(action, nest)
 
             # Check if this is the last action
             if i == len(actions) - 1:

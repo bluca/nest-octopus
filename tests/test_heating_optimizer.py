@@ -27,7 +27,6 @@ from nest_octopus.heating_optimizer import (
     classify_price,
     execute_heating_action,
     find_default_config,
-    find_thermostat,
     handle_reload_signal,
     handle_shutdown_signal,
     load_config,
@@ -393,13 +392,10 @@ class TestThermostatControl:
             reason="Peak hours"
         )
 
-        execute_heating_action(action, mock_client, "device-123")
+        execute_heating_action(action, mock_client)
 
         # Should call set_eco_mode with MANUAL_ECO
-        mock_client.set_eco_mode.assert_called_once()
-        call_args = mock_client.set_eco_mode.call_args
-        assert call_args[0][0] == "device-123"
-        assert call_args[0][1] == EcoMode.MANUAL_ECO
+        mock_client.set_eco_mode.assert_called_once_with(EcoMode.MANUAL_ECO)
 
     @patch('nest_octopus.heating_optimizer.NestThermostatClient')
     def test_execute_heating_action_temperature(self, mock_client_class):
@@ -429,37 +425,11 @@ class TestThermostatControl:
             reason="Low price"
         )
 
-        execute_heating_action(action, mock_client, "device-123")
+        execute_heating_action(action, mock_client)
 
         # Should disable ECO, set HEAT mode, then set temperature
         assert mock_client.set_eco_mode.call_count >= 1
-        mock_client.set_heat.assert_called_once_with("device-123", 22.0)
-
-    @patch('nest_octopus.heating_optimizer.NestThermostatClient')
-    def test_find_thermostat_by_name(self, mock_client_class):
-        """Test finding thermostat by name."""
-        mock_client = Mock()
-
-        # Create mock devices
-        mock_device1 = Mock()
-        mock_device1.device_id = "enterprises/proj/devices/living-room-123"
-        mock_device2 = Mock()
-        mock_device2.device_id = "enterprises/proj/devices/bedroom-456"
-
-        mock_client.list_devices.return_value = [mock_device1, mock_device2]
-
-        device_id = find_thermostat(mock_client, "living-room")
-
-        assert device_id == "enterprises/proj/devices/living-room-123"
-
-    @patch('nest_octopus.heating_optimizer.NestThermostatClient')
-    def test_find_thermostat_not_found(self, mock_client_class):
-        """Test error when thermostat not found."""
-        mock_client = Mock()
-        mock_client.list_devices.return_value = []
-
-        with pytest.raises(ValueError, match="not found"):
-            find_thermostat(mock_client, "nonexistent")
+        mock_client.set_heat.assert_called_once_with(22.0)
 
 
 class TestDailyCycle:
@@ -536,8 +506,9 @@ class TestDailyCycle:
             assert isinstance(kwargs['period_from'], str), "period_from should be a string"
             assert isinstance(kwargs['period_to'], str), "period_to should be a string"
 
-        # Verify Nest API calls
-        mock_nest.list_devices.assert_called_once()
+        # Verify Nest client was initialized (device auto-selected during init)
+        mock_nest_class.assert_called_once()
+        # Verify heating actions were executed
         assert mock_nest.set_eco_mode.called or mock_nest.set_heat.called
 
         # Note: sleep may not be called if all actions are in the past
