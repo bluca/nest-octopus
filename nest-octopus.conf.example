@@ -15,6 +15,6 @@ project_id = your-project-id
 
 [heating]
 # Temperature setpoints in Celsius
-low_price_temp = 22.0
+low_price_temp = 20.0
 average_price_temp = 17.0
 

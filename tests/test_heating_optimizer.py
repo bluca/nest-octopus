@@ -80,7 +80,7 @@ client_id = test-client-id.apps.googleusercontent.com
 project_id = test-project-123
 
 [heating]
-low_price_temp = 22.0
+low_price_temp = 20.0
 average_price_temp = 17.0
 """)
 
@@ -100,7 +100,7 @@ average_price_temp = 17.0
         assert config.client_secret == "test-secret-abc123"
         assert config.refresh_token == "test-refresh-xyz789"
         assert config.project_id == "test-project-123"
-        assert config.low_price_temp == 22.0
+        assert config.low_price_temp == 20.0
         assert config.average_price_temp == 17.0
 
     def test_load_config_missing_file(self):
@@ -158,7 +158,7 @@ project_id = test-proj
             config = load_config(str(config_file))
 
         # Check default values
-        assert config.low_price_temp == 22.0
+        assert config.low_price_temp == 20.0
         assert config.average_price_temp == 17.0
 
     def test_find_default_config_not_found(self):
@@ -307,7 +307,7 @@ class TestHeatingSchedule:
             client_secret="secret",
             refresh_token="token",
             project_id="proj",
-            low_price_temp=22.0,
+            low_price_temp=20.0,
             average_price_temp=17.0
         )
 
@@ -326,8 +326,8 @@ class TestHeatingSchedule:
         assert len(eco_actions) > 0, "Should use ECO during high price periods"
 
         # Should have low temperature setpoint during low price periods
-        low_temp_actions = [a for a in actions if a.temperature == 22.0]
-        assert len(low_temp_actions) > 0, "Should heat to 22°C during low prices"
+        low_temp_actions = [a for a in actions if a.temperature == 20.0]
+        assert len(low_temp_actions) > 0, "Should heat to 20°C during low prices"
 
     def test_heating_action_representation(self):
         """Test HeatingAction string representation."""
@@ -340,13 +340,13 @@ class TestHeatingSchedule:
 
         temp_action = HeatingAction(
             timestamp=datetime(2024, 12, 2, 2, 0),
-            temperature=22.0,
+            temperature=20.0,
             eco_mode=False,
             reason="Low price"
         )
 
         assert "ECO" in repr(eco_action)
-        assert "22" in repr(temp_action)
+        assert "20" in repr(temp_action)
 
 
 class TestThermostatControl:
@@ -408,7 +408,7 @@ class TestThermostatControl:
 
         action = HeatingAction(
             timestamp=datetime(2024, 12, 2, 2, 0),
-            temperature=22.0,
+            temperature=20.0,
             eco_mode=False,
             reason="Low price"
         )
@@ -417,7 +417,7 @@ class TestThermostatControl:
 
         # Should disable ECO, set HEAT mode, then set temperature
         assert mock_client.set_eco_mode.call_count >= 1
-        mock_client.set_heat.assert_called_once_with(22.0)
+        mock_client.set_heat.assert_called_once_with(20.0)
 
 
 class TestDailyCycle:
@@ -569,7 +569,7 @@ class TestSchedulingLogic:
             client_secret="secret",
             refresh_token="token",
             project_id="proj",
-            low_price_temp=22.0,
+            low_price_temp=20.0,
             average_price_temp=17.0
         )
 
@@ -577,8 +577,8 @@ class TestSchedulingLogic:
             prices, weekly_prices, config, datetime(2024, 12, 1, 20, 0, tzinfo=timezone.utc)
         )
 
-        # Should have action to heat to 22°C
-        low_temp_actions = [a for a in actions if a.temperature == 22.0]
+        # Should have action to heat to 20°C
+        low_temp_actions = [a for a in actions if a.temperature == 20.0]
         assert len(low_temp_actions) > 0
 
     def test_high_prices_use_eco(self):
@@ -640,7 +640,7 @@ class TestSchedulingLogic:
             client_secret="secret",
             refresh_token="token",
             project_id="proj",
-            low_price_temp=22.0,
+            low_price_temp=20.0,
             average_price_temp=17.0
         )
 
@@ -648,9 +648,9 @@ class TestSchedulingLogic:
             prices, weekly_prices, config, datetime(2024, 12, 1, 20, 0, tzinfo=timezone.utc)
         )
 
-        # Find the action that sets temperature to 22°C (entering LOW period)
-        low_temp_action = next((a for a in actions if a.temperature == 22.0), None)
-        assert low_temp_action is not None, "Should have action to heat to 22°C during LOW prices"
+        # Find the action that sets temperature to 20°C (entering LOW period)
+        low_temp_action = next((a for a in actions if a.temperature == 20.0), None)
+        assert low_temp_action is not None, "Should have action to heat to 20°C during LOW prices"
 
         # Find the action that returns to 17°C (exiting LOW period)
         return_to_average = [a for a in actions
@@ -687,7 +687,7 @@ class TestSchedulingLogic:
             client_secret="secret",
             refresh_token="token",
             project_id="proj",
-            low_price_temp=22.0,
+            low_price_temp=20.0,
             average_price_temp=17.0
         )
 
@@ -698,11 +698,9 @@ class TestSchedulingLogic:
         # Find the sequence of actions
         sorted_actions = sorted(actions, key=lambda a: a.timestamp)
 
-        # Should have: 22°C (LOW), then 17°C (end of LOW), then ECO (HIGH)
-        low_temp_action = next((a for a in sorted_actions if a.temperature == 22.0), None)
-        assert low_temp_action is not None, "Should heat to 22°C during LOW prices"
-
-        # Next should be return to average temp
+        # Should have: 20°C (LOW), then 17°C (end of LOW), then ECO (HIGH)
+        low_temp_action = next((a for a in sorted_actions if a.temperature == 20.0), None)
+        assert low_temp_action is not None, "Should heat to 20°C during LOW prices"        # Next should be return to average temp
         actions_after_low = [a for a in sorted_actions if a.timestamp > low_temp_action.timestamp]
         return_to_average = next((a for a in actions_after_low
                                  if a.temperature == 17.0
@@ -743,7 +741,7 @@ class TestIntegration:
         # Should have low temperature periods (overnight)
         overnight_actions = [a for a in actions if 0 <= a.timestamp.hour < 6]
         if overnight_actions:
-            low_temp = [a for a in overnight_actions if a.temperature == 22.0]
+            low_temp = [a for a in overnight_actions if a.temperature == 20.0]
             assert len(low_temp) > 0, "Should heat during cheap overnight period"
 
         # Should have ECO mode during HIGH prices
@@ -900,7 +898,7 @@ class TestSignalHandling:
             client_secret="secret",
             refresh_token="token",
             project_id="proj",
-            low_price_temp=22.0,
+            low_price_temp=20.0,
             average_price_temp=17.0
         )
         mock_load_config.return_value = mock_config
@@ -1196,7 +1194,7 @@ client_id = test-client-id.apps.googleusercontent.com
 project_id = test-project-123
 
 [heating]
-low_price_temp = 22.0
+low_price_temp = 20.0
 """)
 
         creds_dir = tmp_path / "credentials"

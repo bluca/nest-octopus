@@ -65,7 +65,7 @@ class Config:
     mpan: Optional[str] = None
 
     # Heating preferences
-    low_price_temp: float = 22.0
+    low_price_temp: float = 20.0
     average_price_temp: float = 17.0
 
 
