@@ -67,6 +67,8 @@ class Config:
     # Heating preferences
     low_price_temp: float = 20.0
     average_price_temp: float = 17.0
+    low_price_threshold: float = 0.75
+    high_price_threshold: float = 1.33
 
 
 @dataclass
@@ -246,6 +248,10 @@ def load_config(config_path: Optional[str] = None) -> Config:
             config.low_price_temp = parser.getfloat('heating', 'low_price_temp')
         if parser.has_option('heating', 'average_price_temp'):
             config.average_price_temp = parser.getfloat('heating', 'average_price_temp')
+        if parser.has_option('heating', 'low_price_threshold'):
+            config.low_price_threshold = parser.getfloat('heating', 'low_price_threshold')
+        if parser.has_option('heating', 'high_price_threshold'):
+            config.high_price_threshold = parser.getfloat('heating', 'high_price_threshold')
 
         # Validate Octopus Energy configuration
         if not config.tariff_code and not (config.api_key and config.account_number):
@@ -290,7 +296,9 @@ def calculate_price_statistics(
 def classify_price(
     price: PricePoint,
     daily_avg: float,
-    weekly_avg: float
+    weekly_avg: float,
+    low_price_threshold: float,
+    high_price_threshold: float
 ) -> str:
     """
     Classify a price point as LOW, AVERAGE, or HIGH.
@@ -299,17 +307,19 @@ def classify_price(
         price: Price point to classify
         daily_avg: Average price for the day
         weekly_avg: Average price for the week
+        low_price_threshold: Multiplier for low price threshold
+        high_price_threshold: Multiplier for high price threshold
 
     Returns:
         Price category (LOW, AVERAGE, or HIGH)
     """
     # Calculate threshold for LOW prices
     # LOW: below both daily and weekly averages
-    avg_threshold = min(daily_avg, weekly_avg) * 0.75
+    avg_threshold = min(daily_avg, weekly_avg) * low_price_threshold
 
     # Calculate threshold for HIGH prices
     # HIGH: significantly above both averages
-    high_threshold = max(daily_avg, weekly_avg) * 1.33
+    high_threshold = max(daily_avg, weekly_avg) * high_price_threshold
 
     if price.value_inc_vat < avg_threshold:
         return PriceCategory.LOW
@@ -357,7 +367,7 @@ def calculate_heating_schedule(
 
     # Classify each price point (prices are already sorted chronologically)
     classified = [
-        (p, classify_price(p, daily_avg, weekly_avg))
+        (p, classify_price(p, daily_avg, weekly_avg, config.low_price_threshold, config.high_price_threshold))
         for p in prices
     ]
 
@@ -879,6 +889,18 @@ def main():
         default=None,
         help='Octopus Energy tariff code (overrides config file)'
     )
+    parser.add_argument(
+        '--low-price-threshold',
+        type=float,
+        default=0.75,
+        help='Low price threshold multiplier (default: 0.75)'
+    )
+    parser.add_argument(
+        '--high-price-threshold',
+        type=float,
+        default=1.33,
+        help='High price threshold multiplier (default: 1.33)'
+    )
     args = parser.parse_args()
 
     logger.debug("Heating Optimization Daemon starting")
@@ -897,11 +919,13 @@ def main():
         logger.debug("Dry-run mode with --tariff-code, skipping config file")
         config = Config(
             tariff_code=args.tariff_code,
+            low_price_threshold=args.low_price_threshold,
+            high_price_threshold=args.high_price_threshold,
             thermostat_name="",
             client_id="",
             client_secret="",
             refresh_token="",
-            project_id=""
+            project_id="",
         )
     else:
         # Load full configuration
@@ -913,6 +937,10 @@ def main():
             if args.tariff_code:
                 logger.debug(f"Overriding tariff code with: {args.tariff_code}")
                 config.tariff_code = args.tariff_code
+
+            # Override threshold values with command line args (which have defaults)
+            config.low_price_threshold = args.low_price_threshold
+            config.high_price_threshold = args.high_price_threshold
         except ConfigurationError as e:
             logger.error(f"Configuration error: {e}")
             return 1

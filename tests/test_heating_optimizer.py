@@ -263,7 +263,7 @@ class TestPriceAnalysis:
             5.3
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold=0.75, high_price_threshold=1.33)
 
         assert category == PriceCategory.LOW
 
@@ -275,7 +275,7 @@ class TestPriceAnalysis:
             14.5  # Between avg and high threshold
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold=0.75, high_price_threshold=1.33)
 
         assert category == PriceCategory.AVERAGE
 
@@ -287,7 +287,7 @@ class TestPriceAnalysis:
             20.3
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold=0.75, high_price_threshold=1.33)
 
         assert category == PriceCategory.HIGH
 
