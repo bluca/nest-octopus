@@ -4,7 +4,7 @@ Heating Optimization Daemon
 
 Queries electricity prices daily at 8pm and optimizes heating schedule to minimize costs
 while maintaining comfort. Uses dynamic pricing to determine when to heat (22°C),
-maintain comfort (17°C), or enable ECO mode during peak prices.
+maintain comfort (17°C), or enable ECO mode during high prices.
 
 The daemon:
 1. Fetches electricity prices for the next 24 hours at 8pm
@@ -67,8 +67,6 @@ class Config:
     # Heating preferences
     low_price_temp: float = 22.0
     average_price_temp: float = 17.0
-    peak_start_hour: int = 16
-    peak_end_hour: int = 19
 
 
 @dataclass
@@ -90,7 +88,6 @@ class PriceCategory:
     LOW = "LOW"
     AVERAGE = "AVERAGE"
     HIGH = "HIGH"
-    PEAK = "PEAK"
 
 
 def notify(message):
@@ -249,10 +246,6 @@ def load_config(config_path: Optional[str] = None) -> Config:
             config.low_price_temp = parser.getfloat('heating', 'low_price_temp')
         if parser.has_option('heating', 'average_price_temp'):
             config.average_price_temp = parser.getfloat('heating', 'average_price_temp')
-        if parser.has_option('heating', 'peak_start_hour'):
-            config.peak_start_hour = parser.getint('heating', 'peak_start_hour')
-        if parser.has_option('heating', 'peak_end_hour'):
-            config.peak_end_hour = parser.getint('heating', 'peak_end_hour')
 
         # Validate Octopus Energy configuration
         if not config.tariff_code and not (config.api_key and config.account_number):
@@ -297,42 +290,26 @@ def calculate_price_statistics(
 def classify_price(
     price: PricePoint,
     daily_avg: float,
-    weekly_avg: float,
-    peak_start_hour: int,
-    peak_end_hour: int
+    weekly_avg: float
 ) -> str:
     """
-    Classify a price point as LOW, AVERAGE, HIGH, or PEAK.
+    Classify a price point as LOW, AVERAGE, or HIGH.
 
     Args:
         price: Price point to classify
         daily_avg: Average price for the day
         weekly_avg: Average price for the week
-        peak_start_hour: Start of peak period (inclusive)
-        peak_end_hour: End of peak period (exclusive)
 
     Returns:
-        Price category (LOW, AVERAGE, HIGH, or PEAK)
+        Price category (LOW, AVERAGE, or HIGH)
     """
-    # Parse datetime from valid_from string if needed
-    if isinstance(price.valid_from, str):
-        valid_from_dt = datetime.fromisoformat(price.valid_from.replace('Z', '+00:00'))
-    else:
-        valid_from_dt = price.valid_from
-
-    hour = valid_from_dt.hour
-
-    # Check if in peak hours (16:00-19:00)
-    if peak_start_hour <= hour < peak_end_hour:
-        return PriceCategory.PEAK
-
     # Calculate threshold for LOW prices
     # LOW: below both daily and weekly averages
-    avg_threshold = min(daily_avg, weekly_avg)
+    avg_threshold = min(daily_avg, weekly_avg) * 0.75
 
     # Calculate threshold for HIGH prices
     # HIGH: significantly above both averages
-    high_threshold = max(daily_avg, weekly_avg) * 1.15
+    high_threshold = max(daily_avg, weekly_avg) * 1.33
 
     if price.value_inc_vat < avg_threshold:
         return PriceCategory.LOW
@@ -352,10 +329,9 @@ def calculate_heating_schedule(
     Calculate optimal heating schedule for the next 24 hours.
 
     Strategy:
-    - PEAK hours (16:00-19:00): Enable ECO mode to minimize costs
+    - HIGH prices: Enable ECO mode to minimize costs
     - LOW price periods: Heat to 22°C for comfort when cheap
     - AVERAGE prices: Maintain 17°C for basic comfort
-    - Find optimal pre/post-peak heating for comfort
 
     Args:
         prices: Price points for next 24 hours
@@ -381,15 +357,9 @@ def calculate_heating_schedule(
 
     # Classify each price point (prices are already sorted chronologically)
     classified = [
-        (p, classify_price(p, daily_avg, weekly_avg, config.peak_start_hour, config.peak_end_hour))
+        (p, classify_price(p, daily_avg, weekly_avg))
         for p in prices
     ]
-
-    # Debug: log classifications during peak hours
-    for p, cat in classified:
-        dt = get_price_datetime(p)
-        if config.peak_start_hour <= dt.hour < config.peak_end_hour:
-            logger.debug(f"  {dt.strftime('%H:%M')}: {p.value_inc_vat:.2f}p classified as {cat}")
 
     # Group consecutive periods of same category
     periods = []
@@ -436,24 +406,13 @@ def calculate_heating_schedule(
                 ))
                 current_mode = 'AVERAGE'
 
-        if category == PriceCategory.PEAK:
-            # Enable ECO mode during peaks
-            if current_mode != 'ECO':
-                actions.append(HeatingAction(
-                    timestamp=period_start,
-                    temperature=None,
-                    eco_mode=True,
-                    reason=f"PEAK price period ({period_start.strftime('%H:%M')})"
-                ))
-                current_mode = 'ECO'
-
-        # If exiting PEAK period, always disable ECO mode first (without setting temperature)
-        elif previous_category == PriceCategory.PEAK and current_mode == 'ECO':
+        # If exiting HIGH period, always disable ECO mode first (without setting temperature)
+        if previous_category == PriceCategory.HIGH and current_mode == 'ECO':
             actions.append(HeatingAction(
                 timestamp=period_start,
                 temperature=None,
                 eco_mode=False,
-                reason=f"End of PEAK period - disabling ECO mode"
+                reason=f"End of HIGH price period - disabling ECO mode"
             ))
             current_mode = None
 
@@ -480,44 +439,17 @@ def calculate_heating_schedule(
                 current_mode = 'AVERAGE'
 
         elif category == PriceCategory.HIGH:
-            # During HIGH prices, use average temp (not worth heating more)
-            if current_mode != 'AVERAGE':
+            # During HIGH prices, enable ECO mode to minimize costs
+            if current_mode != 'ECO':
                 actions.append(HeatingAction(
                     timestamp=period_start,
-                    temperature=config.average_price_temp,
-                    eco_mode=False,
+                    temperature=None,
+                    eco_mode=True,
                     reason=f"HIGH price period ({period_start.strftime('%H:%M')})"
                 ))
-                current_mode = 'AVERAGE'
+                current_mode = 'ECO'
 
         previous_category = category
-
-    # Find optimal pre-peak heating (before 16:00)
-    # Heat up 1-2 hours before peak to maintain comfort through peak period
-    pre_peak_time = start_time.replace(
-        hour=config.peak_start_hour - 2,
-        minute=0,
-        second=0,
-        microsecond=0
-    )
-    if pre_peak_time.date() == start_time.date() + timedelta(days=1):
-        # Find LOW price period before peak
-        def get_price_dt(p):
-            if isinstance(p.valid_from, str):
-                return datetime.fromisoformat(p.valid_from.replace('Z', '+00:00'))
-            return p.valid_from
-
-        pre_peak_prices = [p for p in prices if get_price_dt(p) < pre_peak_time.replace(hour=config.peak_start_hour)]
-        if pre_peak_prices:
-            low_before_peak = min(pre_peak_prices, key=lambda p: p.value_inc_vat)
-            # Add pre-heating action if price is reasonable
-            if low_before_peak.value_inc_vat < daily_avg:
-                actions.append(HeatingAction(
-                    timestamp=get_price_dt(low_before_peak),
-                    temperature=config.low_price_temp,
-                    eco_mode=False,
-                    reason="Pre-peak heating for comfort"
-                ))
 
     # Sort actions by timestamp
     actions.sort(key=lambda a: a.timestamp)
@@ -844,7 +776,6 @@ def run_dry_run(config: Config) -> int:
         print(f"  Weekly Average:  {weekly_avg:.2f}p/kWh")
         print(f"  Daily Minimum:   {daily_min:.2f}p/kWh")
         print(f"  Daily Maximum:   {daily_max:.2f}p/kWh")
-        print(f"  Peak Hours:      {config.peak_start_hour:02d}:00 - {config.peak_end_hour:02d}:00")
         print(f"  Low Temp:        {config.low_price_temp}°C")
         print(f"  Average Temp:    {config.average_price_temp}°C")
 

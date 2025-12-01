@@ -82,8 +82,6 @@ project_id = test-project-123
 [heating]
 low_price_temp = 22.0
 average_price_temp = 17.0
-peak_start_hour = 16
-peak_end_hour = 19
 """)
 
         # Create credentials directory
@@ -104,8 +102,6 @@ peak_end_hour = 19
         assert config.project_id == "test-project-123"
         assert config.low_price_temp == 22.0
         assert config.average_price_temp == 17.0
-        assert config.peak_start_hour == 16
-        assert config.peak_end_hour == 19
 
     def test_load_config_missing_file(self):
         """Test error when config file doesn't exist."""
@@ -164,8 +160,6 @@ project_id = test-proj
         # Check default values
         assert config.low_price_temp == 22.0
         assert config.average_price_temp == 17.0
-        assert config.peak_start_hour == 16
-        assert config.peak_end_hour == 19
 
     def test_find_default_config_not_found(self):
         """Test find_default_config returns None when no files exist."""
@@ -248,18 +242,18 @@ class TestPriceAnalysis:
         assert 0 < weekly_avg < 50
         assert daily_min >= 0
 
-    def test_classify_price_peak_hours(self):
-        """Test that prices during 16:00-19:00 are classified as PEAK."""
+    def test_classify_price_high(self):
+        """Test that very high prices are classified as HIGH."""
         price = create_price_point(
             '2024-12-02T17:00:00Z',
             '2024-12-02T17:30:00Z',
             45.5
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0,
-                                 peak_start_hour=16, peak_end_hour=19)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0)
 
-        assert category == PriceCategory.PEAK
+        # 45.5 > max(15.0, 14.0) * 1.33 = 19.95, so should be HIGH
+        assert category == PriceCategory.HIGH
 
     def test_classify_price_low(self):
         """Test classification of low prices."""
@@ -269,8 +263,7 @@ class TestPriceAnalysis:
             5.3
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0,
-                                 peak_start_hour=16, peak_end_hour=19)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0)
 
         assert category == PriceCategory.LOW
 
@@ -282,8 +275,7 @@ class TestPriceAnalysis:
             14.5  # Between avg and high threshold
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0,
-                                 peak_start_hour=16, peak_end_hour=19)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0)
 
         assert category == PriceCategory.AVERAGE
 
@@ -295,8 +287,7 @@ class TestPriceAnalysis:
             20.3
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0,
-                                 peak_start_hour=16, peak_end_hour=19)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0)
 
         assert category == PriceCategory.HIGH
 
@@ -317,9 +308,7 @@ class TestHeatingSchedule:
             refresh_token="token",
             project_id="proj",
             low_price_temp=22.0,
-            average_price_temp=17.0,
-            peak_start_hour=16,
-            peak_end_hour=19
+            average_price_temp=17.0
         )
 
         start_time = datetime(2024, 12, 1, 20, 0)
@@ -332,10 +321,9 @@ class TestHeatingSchedule:
         for i in range(len(actions) - 1):
             assert actions[i].timestamp <= actions[i + 1].timestamp
 
-        # Should have ECO mode during peak hours (16:00-19:00)
-        peak_actions = [a for a in actions if 16 <= a.timestamp.hour < 19]
-        if peak_actions:
-            assert any(a.eco_mode for a in peak_actions), "Should enable ECO during peak hours"
+        # Should have ECO mode during HIGH prices
+        eco_actions = [a for a in actions if a.eco_mode]
+        assert len(eco_actions) > 0, "Should use ECO during high price periods"
 
         # Should have low temperature setpoint during low price periods
         low_temp_actions = [a for a in actions if a.temperature == 22.0]
@@ -561,13 +549,17 @@ class TestSchedulingLogic:
     def test_overnight_low_prices_heat_to_22(self):
         """Test that overnight low prices result in heating to 22°C."""
         # Create overnight low price scenario
+        # Need more price points to establish proper averages
         prices = [
-            create_price_point('2024-12-02T02:00:00Z', '2024-12-02T02:30:00Z', 5.0),
-            create_price_point('2024-12-02T02:30:00Z', '2024-12-02T03:00:00Z', 5.2)
+            create_price_point('2024-12-02T00:00:00Z', '2024-12-02T00:30:00Z', 15.0),  # AVERAGE
+            create_price_point('2024-12-02T01:00:00Z', '2024-12-02T01:30:00Z', 18.0),  # AVERAGE
+            create_price_point('2024-12-02T02:00:00Z', '2024-12-02T02:30:00Z', 8.0),   # LOW
+            create_price_point('2024-12-02T02:30:00Z', '2024-12-02T03:00:00Z', 7.0),   # LOW
+            create_price_point('2024-12-02T03:00:00Z', '2024-12-02T03:30:00Z', 16.0),  # AVERAGE
         ]
 
         weekly_prices = [
-            create_price_point('2024-11-25T02:00:00Z', '2024-11-25T02:30:00Z', 12.0)
+            create_price_point('2024-11-25T02:00:00Z', '2024-11-25T02:30:00Z', 15.0)
         ]
 
         config = Config(
@@ -589,13 +581,15 @@ class TestSchedulingLogic:
         low_temp_actions = [a for a in actions if a.temperature == 22.0]
         assert len(low_temp_actions) > 0
 
-    def test_peak_hours_always_eco(self):
-        """Test that peak hours (16:00-19:00) always use ECO mode."""
-        # Create peak price scenario
+    def test_high_prices_use_eco(self):
+        """Test that HIGH prices trigger ECO mode."""
+        # Create HIGH price scenario (prices well above average)
         prices = [
-            create_price_point('2024-12-02T16:00:00Z', '2024-12-02T16:30:00Z', 35.0),
-            create_price_point('2024-12-02T17:00:00Z', '2024-12-02T17:30:00Z', 45.0),
-            create_price_point('2024-12-02T18:00:00Z', '2024-12-02T18:30:00Z', 40.0)
+            create_price_point('2024-12-02T10:00:00Z', '2024-12-02T10:30:00Z', 15.0),  # AVERAGE
+            create_price_point('2024-12-02T16:00:00Z', '2024-12-02T16:30:00Z', 45.0),  # HIGH
+            create_price_point('2024-12-02T17:00:00Z', '2024-12-02T17:30:00Z', 50.0),  # HIGH
+            create_price_point('2024-12-02T18:00:00Z', '2024-12-02T18:30:00Z', 48.0),  # HIGH
+            create_price_point('2024-12-02T19:00:00Z', '2024-12-02T19:30:00Z', 20.0),  # AVERAGE
         ]
 
         weekly_prices = [
@@ -608,19 +602,16 @@ class TestSchedulingLogic:
             client_id="id",
             client_secret="secret",
             refresh_token="token",
-            project_id="proj",
-            peak_start_hour=16,
-            peak_end_hour=19
+            project_id="proj"
         )
 
         actions = calculate_heating_schedule(
             prices, weekly_prices, config, datetime(2024, 12, 1, 20, 0, tzinfo=timezone.utc)
         )
 
-        # All actions during peak hours should be ECO mode
-        peak_actions = [a for a in actions if 16 <= a.timestamp.hour < 19]
-        if peak_actions:
-            assert all(a.eco_mode for a in peak_actions)
+        # Should have ECO mode actions during HIGH price periods
+        eco_actions = [a for a in actions if a.eco_mode]
+        assert len(eco_actions) > 0, "Should enable ECO mode during HIGH prices"
 
     def test_low_price_window_ends_returns_to_average_temp(self):
         """Test that temperature returns to average_price_temp when LOW price period ends."""
@@ -650,9 +641,7 @@ class TestSchedulingLogic:
             refresh_token="token",
             project_id="proj",
             low_price_temp=22.0,
-            average_price_temp=17.0,
-            peak_start_hour=16,
-            peak_end_hour=19
+            average_price_temp=17.0
         )
 
         actions = calculate_heating_schedule(
@@ -674,17 +663,17 @@ class TestSchedulingLogic:
         assert return_to_average[0].timestamp.hour == 3
         assert return_to_average[0].timestamp.minute == 0
 
-    def test_low_price_to_peak_returns_to_average_then_eco(self):
-        """Test that when LOW period transitions to PEAK, temp returns to average before ECO."""
-        # Create scenario: LOW prices 14:00-16:00, then PEAK at 16:00
+    def test_low_price_to_high_returns_to_average_then_eco(self):
+        """Test that when LOW period transitions to HIGH, temp returns to average before ECO."""
+        # Create scenario: LOW prices 14:00-16:00, then HIGH at 16:00
         prices = [
             create_price_point('2024-12-02T14:00:00Z', '2024-12-02T14:30:00Z', 8.0),   # LOW
             create_price_point('2024-12-02T14:30:00Z', '2024-12-02T15:00:00Z', 7.0),   # LOW
             create_price_point('2024-12-02T15:00:00Z', '2024-12-02T15:30:00Z', 9.0),   # LOW
             create_price_point('2024-12-02T15:30:00Z', '2024-12-02T16:00:00Z', 8.5),   # LOW
-            create_price_point('2024-12-02T16:00:00Z', '2024-12-02T16:30:00Z', 35.0),  # PEAK
-            create_price_point('2024-12-02T16:30:00Z', '2024-12-02T17:00:00Z', 40.0),  # PEAK
-            create_price_point('2024-12-02T17:00:00Z', '2024-12-02T17:30:00Z', 38.0),  # PEAK
+            create_price_point('2024-12-02T16:00:00Z', '2024-12-02T16:30:00Z', 45.0),  # HIGH
+            create_price_point('2024-12-02T16:30:00Z', '2024-12-02T17:00:00Z', 50.0),  # HIGH
+            create_price_point('2024-12-02T17:00:00Z', '2024-12-02T17:30:00Z', 48.0),  # HIGH
         ]
 
         weekly_prices = [
@@ -699,9 +688,7 @@ class TestSchedulingLogic:
             refresh_token="token",
             project_id="proj",
             low_price_temp=22.0,
-            average_price_temp=17.0,
-            peak_start_hour=16,
-            peak_end_hour=19
+            average_price_temp=17.0
         )
 
         actions = calculate_heating_schedule(
@@ -711,7 +698,7 @@ class TestSchedulingLogic:
         # Find the sequence of actions
         sorted_actions = sorted(actions, key=lambda a: a.timestamp)
 
-        # Should have: 22°C (LOW), then 17°C (end of LOW), then ECO (PEAK)
+        # Should have: 22°C (LOW), then 17°C (end of LOW), then ECO (HIGH)
         low_temp_action = next((a for a in sorted_actions if a.temperature == 22.0), None)
         assert low_temp_action is not None, "Should heat to 22°C during LOW prices"
 
@@ -723,12 +710,10 @@ class TestSchedulingLogic:
         assert return_to_average is not None, "Should return to 17°C when LOW period ends"
         assert return_to_average.timestamp.hour == 16
 
-        # Then should enable ECO mode for PEAK
+        # Then should enable ECO mode for HIGH prices
         eco_action = next((a for a in actions_after_low
                           if a.eco_mode and a.timestamp >= return_to_average.timestamp), None)
-        assert eco_action is not None, "Should enable ECO mode for PEAK period"
-
-
+        assert eco_action is not None, "Should enable ECO mode for HIGH price period"
 class TestIntegration:
     """Integration tests with realistic scenarios."""
 
@@ -761,11 +746,9 @@ class TestIntegration:
             low_temp = [a for a in overnight_actions if a.temperature == 22.0]
             assert len(low_temp) > 0, "Should heat during cheap overnight period"
 
-        # Should have ECO mode during peak (16:00-19:00)
-        peak_actions = [a for a in actions if 16 <= a.timestamp.hour < 19]
-        if peak_actions:
-            eco_actions = [a for a in peak_actions if a.eco_mode]
-            assert len(eco_actions) > 0, "Should use ECO during peak hours"
+        # Should have ECO mode during HIGH prices
+        eco_actions = [a for a in actions if a.eco_mode]
+        assert len(eco_actions) > 0, "Should use ECO during high price periods"
 
         # Verify all actions have timestamps in the future (from start_time)
         for action in actions:
@@ -918,9 +901,7 @@ class TestSignalHandling:
             refresh_token="token",
             project_id="proj",
             low_price_temp=22.0,
-            average_price_temp=17.0,
-            peak_start_hour=16,
-            peak_end_hour=19
+            average_price_temp=17.0
         )
         mock_load_config.return_value = mock_config
 

@@ -18,6 +18,3 @@ project_id = your-project-id
 low_price_temp = 22.0
 average_price_temp = 17.0
 
-# Peak hours when ECO mode should be enabled (24-hour format)
-peak_start_hour = 16
-peak_end_hour = 19
