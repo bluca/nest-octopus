@@ -1,0 +1,4 @@
+/.mkosi-*
+mkosi.cache
+mkosi.builddir
+mkosi.output
