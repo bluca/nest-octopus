@@ -1,0 +1,18 @@
+[Unit]
+Description=Nest Octopus Heating Optimizer Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify-reload
+ExecStart=/usr/bin/python3 -m nest_octopus.heating_optimizer
+Restart=on-failure
+ImportCredential=api_key
+ImportCredential=client_secret
+ImportCredential=refresh_token
+RuntimeDirectory=nest-octopus
+TemporaryFileSystem=/run
+BindReadOnlyPaths=-/etc/nest-octopus
+
+[Install]
+WantedBy=multi-user.target

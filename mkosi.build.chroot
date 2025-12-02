@@ -1,0 +1,13 @@
+#!/bin/bash
+set -e
+
+if [ -d usr/src/packages/SOURCES/nest-octopus ]; then
+    cd usr/src/packages/SOURCES/nest-octopus
+fi
+
+python3 -m pytest -q
+python3 -m build --skip-dependency-check --wheel --no-isolation --outdir /tmp/o
+python3 -m wheel unpack --dest /tmp/i /tmp/o/nest_octopus-*.whl
+mkdir -p "$DESTDIR/usr/lib/python3/dist-packages/"
+mv /tmp/i/nest_octopus-*/* "$DESTDIR/usr/lib/python3/dist-packages/"
+rm -rf build/ nest_octopus.egg-info/
