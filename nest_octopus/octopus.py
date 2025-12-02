@@ -41,7 +41,7 @@ class PricePoint:
         self.valid_to = data['valid_to']
         self.payment_method = data.get('payment_method')
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"PricePoint(inc_vat={self.value_inc_vat}p, {self.valid_from} to {self.valid_to})"
 
 
@@ -186,6 +186,7 @@ class OctopusEnergyClient:
                         f"Available MPANs: {', '.join(mp.get('mpan') for mp in import_meters)}"
                     )
 
+            assert meter_point is not None
             agreements = meter_point.get('agreements', [])
             if not agreements:
                 raise OctopusAPIError("No tariff agreements found")
@@ -243,6 +244,7 @@ class OctopusEnergyClient:
 
             self._cached_tariff_code = tariff_code
             self._cache_expires_at = cache_expiry_monotonic
+            assert isinstance(tariff_code, str)
             return tariff_code
 
         except requests.exceptions.Timeout:
@@ -268,8 +270,8 @@ class OctopusEnergyClient:
     def get_unit_rates(
         self,
         tariff_code: Optional[str] = None,
-        period_from: str = None,
-        period_to: str = None
+        period_from: Optional[str] = None,
+        period_to: Optional[str] = None
     ) -> List[PricePoint]:
         """
         Fetch electricity unit rates for a specific tariff.
@@ -342,8 +344,8 @@ class OctopusEnergyClient:
     def get_raw_data(
         self,
         tariff_code: Optional[str] = None,
-        period_from: str = None,
-        period_to: str = None
+        period_from: Optional[str] = None,
+        period_to: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Fetch raw JSON response for unit rates.
@@ -383,6 +385,7 @@ class OctopusEnergyClient:
 
             data = response.json()
             logger.debug(f"Successfully retrieved raw data")
+            assert isinstance(data, dict)
             return data
 
         except requests.exceptions.Timeout:
@@ -405,15 +408,15 @@ class OctopusEnergyClient:
             logger.error(error_msg)
             raise OctopusAPIError(error_msg)
 
-    def close(self):
+    def close(self) -> None:
         """Close the HTTP session."""
         self.session.close()
         logger.debug("Octopus Energy API client session closed")
 
-    def __enter__(self):
+    def __enter__(self) -> 'OctopusEnergyClient':
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit."""
         self.close()

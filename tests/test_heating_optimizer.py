@@ -13,6 +13,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, List
 from unittest.mock import Mock, patch, MagicMock
 
 import pytest
@@ -40,7 +41,7 @@ from nest_octopus.octopus import PricePoint
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "heating"
 
 
-def create_price_point(valid_from_str, valid_to_str, price_inc_vat):
+def create_price_point(valid_from_str: str, valid_to_str: str, price_inc_vat: float) -> PricePoint:
     """Helper to create a PricePoint for testing."""
     return PricePoint({
         'valid_from': valid_from_str,
@@ -50,7 +51,7 @@ def create_price_point(valid_from_str, valid_to_str, price_inc_vat):
     })
 
 
-def load_price_fixture(filename: str) -> list:
+def load_price_fixture(filename: str) -> List[PricePoint]:
     """Load price fixture and convert to PricePoint objects."""
     with open(FIXTURES_DIR / filename) as f:
         data = json.load(f)
@@ -66,7 +67,7 @@ def load_price_fixture(filename: str) -> list:
 class TestConfiguration:
     """Test configuration loading and validation."""
 
-    def test_load_config_success(self, tmp_path):
+    def test_load_config_success(self, tmp_path: Any) -> None:
         """Test successful configuration loading."""
         # Create config file
         config_file = tmp_path / "config.ini"
@@ -103,12 +104,12 @@ average_price_temp = 17.0
         assert config.low_price_temp == 20.0
         assert config.average_price_temp == 17.0
 
-    def test_load_config_missing_file(self):
+    def test_load_config_missing_file(self) -> None:
         """Test error when config file doesn't exist."""
         with pytest.raises(ConfigurationError, match="Configuration file not found"):
             load_config("nonexistent.ini")
 
-    def test_load_config_no_credentials_dir(self, tmp_path):
+    def test_load_config_no_credentials_dir(self, tmp_path: Any) -> None:
         """Test error when CREDENTIALS_DIRECTORY not set."""
         config_file = tmp_path / "config.ini"
         config_file.write_text("[octopus]\ntariff_code = TEST\n")
@@ -117,7 +118,7 @@ average_price_temp = 17.0
             with pytest.raises(ConfigurationError, match="CREDENTIALS_DIRECTORY"):
                 load_config(str(config_file))
 
-    def test_load_config_missing_credentials(self, tmp_path):
+    def test_load_config_missing_credentials(self, tmp_path: Any) -> None:
         """Test error when credential files are missing."""
         config_file = tmp_path / "config.ini"
         config_file.write_text("""
@@ -136,7 +137,7 @@ project_id = test-proj
             with pytest.raises(ConfigurationError, match="client_secret"):
                 load_config(str(config_file))
 
-    def test_load_config_default_heating_values(self, tmp_path):
+    def test_load_config_default_heating_values(self, tmp_path: Any) -> None:
         """Test default heating configuration values."""
         config_file = tmp_path / "config.ini"
         config_file.write_text("""
@@ -161,40 +162,40 @@ project_id = test-proj
         assert config.low_price_temp == 20.0
         assert config.average_price_temp == 17.0
 
-    def test_find_default_config_not_found(self):
+    def test_find_default_config_not_found(self) -> None:
         """Test find_default_config returns None when no files exist."""
         with patch('os.path.exists', return_value=False):
             result = find_default_config()
             assert result is None
 
-    def test_find_default_config_finds_etc(self):
+    def test_find_default_config_finds_etc(self) -> None:
         """Test find_default_config finds /etc config first."""
-        def exists_mock(path):
-            return path == "/etc/nest-octopus/nest-octopus.conf"
+        def exists_mock(path: Any) -> bool:
+            return bool(path == "/etc/nest-octopus/nest-octopus.conf")
 
         with patch('os.path.exists', side_effect=exists_mock):
             result = find_default_config()
             assert result == "/etc/nest-octopus/nest-octopus.conf"
 
-    def test_find_default_config_finds_run(self):
+    def test_find_default_config_finds_run(self) -> None:
         """Test find_default_config finds /run config if /etc missing."""
-        def exists_mock(path):
-            return path == "/run/nest-octopus/nest-octopus.conf"
+        def exists_mock(path: Any) -> bool:
+            return bool(path == "/run/nest-octopus/nest-octopus.conf")
 
         with patch('os.path.exists', side_effect=exists_mock):
             result = find_default_config()
             assert result == "/run/nest-octopus/nest-octopus.conf"
 
-    def test_find_default_config_finds_usr_lib(self):
+    def test_find_default_config_finds_usr_lib(self) -> None:
         """Test find_default_config finds /usr/lib config if others missing."""
-        def exists_mock(path):
-            return path == "/usr/lib/nest-octopus/nest-octopus.conf"
+        def exists_mock(path: Any) -> bool:
+            return bool(path == "/usr/lib/nest-octopus/nest-octopus.conf")
 
         with patch('os.path.exists', side_effect=exists_mock):
             result = find_default_config()
             assert result == "/usr/lib/nest-octopus/nest-octopus.conf"
 
-    def test_load_config_with_none_path_searches(self, tmp_path):
+    def test_load_config_with_none_path_searches(self, tmp_path: Any) -> None:
         """Test load_config searches default paths when None provided."""
         # Create a config in a mock location
         config_file = tmp_path / "config.ini"
@@ -217,7 +218,7 @@ project_id = test-proj
                 config = load_config(None)
                 assert config.tariff_code == "TEST"
 
-    def test_load_config_with_none_path_fails_if_not_found(self):
+    def test_load_config_with_none_path_fails_if_not_found(self) -> None:
         """Test load_config raises error when no default config found."""
         with patch('nest_octopus.heating_optimizer.find_default_config', return_value=None):
             with pytest.raises(ConfigurationError, match="No configuration file found"):
@@ -227,7 +228,7 @@ project_id = test-proj
 class TestPriceAnalysis:
     """Test price statistics and classification."""
 
-    def test_calculate_price_statistics(self):
+    def test_calculate_price_statistics(self) -> None:
         """Test price statistics calculation."""
         daily_prices = load_price_fixture("typical_day_prices.json")
         weekly_prices = load_price_fixture("weekly_prices_sample.json")
@@ -242,7 +243,7 @@ class TestPriceAnalysis:
         assert 0 < weekly_avg < 50
         assert daily_min >= 0
 
-    def test_classify_price_high(self):
+    def test_classify_price_high(self) -> None:
         """Test that very high prices are classified as HIGH."""
         price = create_price_point(
             '2024-12-02T17:00:00Z',
@@ -250,12 +251,12 @@ class TestPriceAnalysis:
             45.5
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold=0.75, high_price_threshold=1.33)
 
         # 45.5 > max(15.0, 14.0) * 1.33 = 19.95, so should be HIGH
         assert category == PriceCategory.HIGH
 
-    def test_classify_price_low(self):
+    def test_classify_price_low(self) -> None:
         """Test classification of low prices."""
         price = create_price_point(
             '2024-12-02T02:00:00Z',
@@ -267,7 +268,7 @@ class TestPriceAnalysis:
 
         assert category == PriceCategory.LOW
 
-    def test_classify_price_average(self):
+    def test_classify_price_average(self) -> None:
         """Test classification of average prices."""
         price = create_price_point(
             '2024-12-02T10:00:00Z',
@@ -279,8 +280,8 @@ class TestPriceAnalysis:
 
         assert category == PriceCategory.AVERAGE
 
-    def test_classify_price_high(self):
-        """Test classification of high prices."""
+    def test_classify_price_high_moderate_value(self) -> None:
+        """Test classification of moderately high prices."""
         price = create_price_point(
             '2024-12-02T15:00:00Z',
             '2024-12-02T15:30:00Z',
@@ -295,7 +296,7 @@ class TestPriceAnalysis:
 class TestHeatingSchedule:
     """Test heating schedule calculation."""
 
-    def test_calculate_heating_schedule_typical_day(self):
+    def test_calculate_heating_schedule_typical_day(self) -> None:
         """Test schedule calculation for a typical day."""
         daily_prices = load_price_fixture("typical_day_prices.json")
         weekly_prices = load_price_fixture("weekly_prices_sample.json")
@@ -329,7 +330,7 @@ class TestHeatingSchedule:
         low_temp_actions = [a for a in actions if a.temperature == 20.0]
         assert len(low_temp_actions) > 0, "Should heat to 20°C during low prices"
 
-    def test_heating_action_representation(self):
+    def test_heating_action_representation(self) -> None:
         """Test HeatingAction string representation."""
         eco_action = HeatingAction(
             timestamp=datetime(2024, 12, 2, 17, 0),
@@ -353,7 +354,7 @@ class TestThermostatControl:
     """Test thermostat control functions."""
 
     @patch('nest_octopus.heating_optimizer.NestThermostatClient')
-    def test_execute_heating_action_eco_mode(self, mock_client_class):
+    def test_execute_heating_action_eco_mode(self, mock_client_class: Any) -> None:
         """Test executing ECO mode action."""
         from nest_octopus.nest_thermostat import EcoMode, ThermostatStatus
 
@@ -386,7 +387,7 @@ class TestThermostatControl:
         mock_client.set_eco_mode.assert_called_once_with(EcoMode.MANUAL_ECO)
 
     @patch('nest_octopus.heating_optimizer.NestThermostatClient')
-    def test_execute_heating_action_temperature(self, mock_client_class):
+    def test_execute_heating_action_temperature(self, mock_client_class: Any) -> None:
         """Test executing temperature setpoint action."""
         from nest_octopus.nest_thermostat import ThermostatStatus
 
@@ -426,8 +427,8 @@ class TestDailyCycle:
     @patch('nest_octopus.heating_optimizer.time.sleep')
     @patch('nest_octopus.heating_optimizer.NestThermostatClient')
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
-    def test_run_daily_cycle_complete(self, mock_octopus_class,
-                                     mock_nest_class, mock_sleep):
+    def test_run_daily_cycle_complete(self, mock_octopus_class: Any,
+                                     mock_nest_class: Any, mock_sleep: Any) -> None:
         """Test complete daily cycle execution."""
         from nest_octopus.nest_thermostat import ThermostatStatus
 
@@ -509,8 +510,8 @@ class TestDailyCycle:
     @patch('nest_octopus.heating_optimizer.time.sleep')
     @patch('nest_octopus.heating_optimizer.NestThermostatClient')
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
-    def test_run_daily_cycle_no_prices(self, mock_octopus_class,
-                                       mock_nest_class, mock_sleep):
+    def test_run_daily_cycle_no_prices(self, mock_octopus_class: Any,
+                                       mock_nest_class: Any, mock_sleep: Any) -> None:
         """Test handling when no prices are available."""
         mock_octopus = Mock()
         mock_octopus_class.return_value = mock_octopus
@@ -546,7 +547,7 @@ class TestDailyCycle:
 class TestSchedulingLogic:
     """Test specific scheduling scenarios."""
 
-    def test_overnight_low_prices_heat_to_22(self):
+    def test_overnight_low_prices_heat_to_22(self) -> None:
         """Test that overnight low prices result in heating to 22°C."""
         # Create overnight low price scenario
         # Need more price points to establish proper averages
@@ -581,7 +582,7 @@ class TestSchedulingLogic:
         low_temp_actions = [a for a in actions if a.temperature == 20.0]
         assert len(low_temp_actions) > 0
 
-    def test_high_prices_use_eco(self):
+    def test_high_prices_use_eco(self) -> None:
         """Test that HIGH prices trigger ECO mode."""
         # Create HIGH price scenario (prices well above average)
         prices = [
@@ -613,7 +614,7 @@ class TestSchedulingLogic:
         eco_actions = [a for a in actions if a.eco_mode]
         assert len(eco_actions) > 0, "Should enable ECO mode during HIGH prices"
 
-    def test_low_price_window_ends_returns_to_average_temp(self):
+    def test_low_price_window_ends_returns_to_average_temp(self) -> None:
         """Test that temperature returns to average_price_temp when LOW price period ends."""
         # Create scenario: LOW prices 01:00-03:00, then AVERAGE prices 03:00-05:00
         prices = [
@@ -663,7 +664,7 @@ class TestSchedulingLogic:
         assert return_to_average[0].timestamp.hour == 3
         assert return_to_average[0].timestamp.minute == 0
 
-    def test_low_price_to_high_returns_to_average_then_eco(self):
+    def test_low_price_to_high_returns_to_average_then_eco(self) -> None:
         """Test that when LOW period transitions to HIGH, temp returns to average before ECO."""
         # Create scenario: LOW prices 14:00-16:00, then HIGH at 16:00
         prices = [
@@ -716,7 +717,7 @@ class TestIntegration:
     """Integration tests with realistic scenarios."""
 
     @patch('nest_octopus.heating_optimizer.time.sleep')
-    def test_full_day_schedule_execution(self, mock_sleep):
+    def test_full_day_schedule_execution(self, mock_sleep: Any) -> None:
         """Test full 24-hour schedule with realistic price data."""
         # Load realistic price data
         daily_prices = load_price_fixture("typical_day_prices.json")
@@ -756,7 +757,7 @@ class TestIntegration:
 class TestSignalHandling:
     """Test signal handling for graceful shutdown and config reload."""
 
-    def test_shutdown_signal_handler(self):
+    def test_shutdown_signal_handler(self) -> None:
         """Test SIGTERM sets shutdown flag."""
         import nest_octopus.heating_optimizer as ho
 
@@ -769,7 +770,7 @@ class TestSignalHandling:
         # Verify flag is set
         assert ho.shutdown_requested is True
 
-    def test_reload_signal_handler(self):
+    def test_reload_signal_handler(self) -> None:
         """Test SIGHUP sets reload flag."""
         import nest_octopus.heating_optimizer as ho
 
@@ -786,8 +787,8 @@ class TestSignalHandling:
     @patch('nest_octopus.heating_optimizer.run_daily_cycle')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py'])
-    def test_main_handles_shutdown_signal(self, mock_load_config,
-                                         mock_run_cycle, mock_sleep):
+    def test_main_handles_shutdown_signal(self, mock_load_config: Any,
+                                         mock_run_cycle: Any, mock_sleep: Any) -> None:
         """Test main loop exits gracefully on shutdown signal."""
         import nest_octopus.heating_optimizer as ho
         from nest_octopus.heating_optimizer import main
@@ -801,7 +802,7 @@ class TestSignalHandling:
         mock_load_config.return_value = mock_config
 
         # Simulate shutdown signal after first sleep
-        def trigger_shutdown(*args, **kwargs):
+        def trigger_shutdown(*args: Any, **kwargs: Any) -> None:
             ho.shutdown_requested = True
 
         mock_sleep.side_effect = trigger_shutdown
@@ -817,8 +818,8 @@ class TestSignalHandling:
     @patch('nest_octopus.heating_optimizer.run_daily_cycle')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py'])
-    def test_main_reloads_config_on_sighup(self, mock_load_config,
-                                          mock_run_cycle, mock_sleep):
+    def test_main_reloads_config_on_sighup(self, mock_load_config: Any,
+                                          mock_run_cycle: Any, mock_sleep: Any) -> None:
         """Test main loop reloads configuration on SIGHUP."""
         import nest_octopus.heating_optimizer as ho
         from nest_octopus.heating_optimizer import main
@@ -834,7 +835,7 @@ class TestSignalHandling:
 
         # Simulate reload signal, then shutdown
         call_count = [0]
-        def trigger_reload_then_shutdown(*args, **kwargs):
+        def trigger_reload_then_shutdown(*args: Any, **kwargs: Any) -> None:
             call_count[0] += 1
             if call_count[0] == 1:
                 # First sleep: trigger reload
@@ -857,8 +858,8 @@ class TestSignalHandling:
     @patch('nest_octopus.heating_optimizer.run_daily_cycle')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py', '--config', '/custom/path/config.ini'])
-    def test_main_uses_custom_config_path(self, mock_load_config,
-                                         mock_run_cycle, mock_sleep):
+    def test_main_uses_custom_config_path(self, mock_load_config: Any,
+                                         mock_run_cycle: Any, mock_sleep: Any) -> None:
         """Test main uses custom config path from --config argument."""
         import nest_octopus.heating_optimizer as ho
         from nest_octopus.heating_optimizer import main
@@ -871,7 +872,7 @@ class TestSignalHandling:
         mock_load_config.return_value = mock_config
 
         # Trigger shutdown immediately
-        def trigger_shutdown(*args, **kwargs):
+        def trigger_shutdown(*args: Any, **kwargs: Any) -> None:
             ho.shutdown_requested = True
 
         mock_sleep.side_effect = trigger_shutdown
@@ -886,7 +887,7 @@ class TestSignalHandling:
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py', '--dry-run'])
-    def test_main_dry_run_mode(self, mock_load_config, mock_octopus_class, capsys):
+    def test_main_dry_run_mode(self, mock_load_config: Any, mock_octopus_class: Any, capsys: Any) -> None:
         """Test main with --dry-run fetches prices and displays schedule."""
         from nest_octopus.heating_optimizer import main
 
@@ -943,7 +944,7 @@ class TestDryRun:
     """Test dry-run mode functionality."""
 
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
-    def test_run_dry_run_success(self, mock_octopus_class, capsys):
+    def test_run_dry_run_success(self, mock_octopus_class: Any, capsys: Any) -> None:
         """Test successful dry run execution."""
         # Setup config
         config = Config(
@@ -993,7 +994,7 @@ class TestDryRun:
         mock_octopus.close.assert_called_once()
 
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
-    def test_run_dry_run_no_prices(self, mock_octopus_class, capsys):
+    def test_run_dry_run_no_prices(self, mock_octopus_class: Any, capsys: Any) -> None:
         """Test dry run when no prices available."""
         config = Config(
             tariff_code="E-1R-AGILE-FLEX-22-11-25-H",
@@ -1021,7 +1022,7 @@ class TestDryRun:
         assert "No prices available" in captured.out
 
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
-    def test_run_dry_run_handles_exception(self, mock_octopus_class, capsys):
+    def test_run_dry_run_handles_exception(self, mock_octopus_class: Any, capsys: Any) -> None:
         """Test dry run handles exceptions gracefully."""
         config = Config(
             tariff_code="E-1R-AGILE-FLEX-22-11-25-H",
@@ -1053,7 +1054,7 @@ class TestDryRun:
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py', '--dry-run', '--tariff-code', 'E-1R-AGILE-TEST-H'])
-    def test_dry_run_with_tariff_code_skips_config(self, mock_load_config, mock_octopus_class, capsys):
+    def test_dry_run_with_tariff_code_skips_config(self, mock_load_config: Any, mock_octopus_class: Any, capsys: Any) -> None:
         """Test dry-run with --tariff-code doesn't load config file."""
         from nest_octopus.heating_optimizer import main
 
@@ -1092,7 +1093,7 @@ class TestDryRun:
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py', '--dry-run', '--tariff-code', 'E-1R-OVERRIDE-H'])
-    def test_tariff_code_overrides_config(self, mock_load_config, mock_octopus_class, capsys):
+    def test_tariff_code_overrides_config(self, mock_load_config: Any, mock_octopus_class: Any, capsys: Any) -> None:
         """Test --tariff-code overrides config file setting."""
         from nest_octopus.heating_optimizer import main
 
@@ -1147,7 +1148,7 @@ class TestDryRun:
     @patch('nest_octopus.heating_optimizer.run_daily_cycle')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py', '--config', '/test/config.ini', '--tariff-code', 'E-1R-OVERRIDE-H'])
-    def test_tariff_code_overrides_in_daemon_mode(self, mock_load_config, mock_run_cycle, mock_sleep):
+    def test_tariff_code_overrides_in_daemon_mode(self, mock_load_config: Any, mock_run_cycle: Any, mock_sleep: Any) -> None:
         """Test --tariff-code overrides config in normal daemon mode."""
         import nest_octopus.heating_optimizer as ho
         from nest_octopus.heating_optimizer import main
@@ -1160,7 +1161,7 @@ class TestDryRun:
         mock_load_config.return_value = mock_config
 
         # Trigger shutdown immediately
-        def trigger_shutdown(*args, **kwargs):
+        def trigger_shutdown(*args: Any, **kwargs: Any) -> None:
             ho.shutdown_requested = True
 
         mock_sleep.side_effect = trigger_shutdown
@@ -1181,7 +1182,7 @@ class TestDryRun:
 class TestConfigValidation:
     """Test configuration validation edge cases."""
 
-    def test_load_config_missing_tariff_and_credentials(self, tmp_path):
+    def test_load_config_missing_tariff_and_credentials(self, tmp_path: Any) -> None:
         """Test error when neither tariff_code nor api credentials are provided."""
         config_file = tmp_path / "config.ini"
         config_file.write_text("""
@@ -1206,7 +1207,7 @@ low_price_temp = 20.0
             with pytest.raises(ConfigurationError, match="Either tariff_code or both api_key and account_number must be configured"):
                 load_config(str(config_file))
 
-    def test_load_config_only_api_key_no_account(self, tmp_path):
+    def test_load_config_only_api_key_no_account(self, tmp_path: Any) -> None:
         """Test error when only api_key is provided without account_number."""
         config_file = tmp_path / "config.ini"
         config_file.write_text("""
@@ -1229,7 +1230,7 @@ project_id = test-project-123
             with pytest.raises(ConfigurationError, match="Either tariff_code or both api_key and account_number must be configured"):
                 load_config(str(config_file))
 
-    def test_load_config_invalid_heating_values(self, tmp_path):
+    def test_load_config_invalid_heating_values(self, tmp_path: Any) -> None:
         """Test handling of invalid heating temperature values."""
         config_file = tmp_path / "config.ini"
         config_file.write_text("""

@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from nest_octopus.nest_thermostat import EcoMode, NestThermostatClient, ThermostatMode
 from nest_octopus.octopus import OctopusEnergyClient, PricePoint
@@ -79,7 +79,7 @@ class HeatingAction:
     eco_mode: bool
     reason: str
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         if self.eco_mode:
             return f"HeatingAction({self.timestamp.strftime('%H:%M')}, ECO, {self.reason})"
         return f"HeatingAction({self.timestamp.strftime('%H:%M')}, {self.temperature}°C, {self.reason})"
@@ -92,7 +92,7 @@ class PriceCategory:
     HIGH = "HIGH"
 
 
-def notify(message):
+def notify(message: bytes) -> None:
     if not message:
         raise ValueError("notify() requires a message")
 
@@ -112,16 +112,16 @@ def notify(message):
         sock.sendall(message)
 
 
-def notify_ready():
+def notify_ready() -> None:
     notify(b"READY=1")
 
 
-def notify_reloading():
+def notify_reloading() -> None:
     microsecs = time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000
     notify(f"RELOADING=1\nMONOTONIC_USEC={microsecs}".encode())
 
 
-def notify_stopping():
+def notify_stopping() -> None:
     notify(b"STOPPING=1")
 
 
@@ -360,9 +360,11 @@ def calculate_heating_schedule(
     )
 
     # Helper function to get datetime from price
-    def get_price_datetime(price):
+    def get_price_datetime(price: PricePoint) -> datetime:
         if isinstance(price.valid_from, str):
             return datetime.fromisoformat(price.valid_from.replace('Z', '+00:00'))
+        # valid_from must be datetime if not str
+        assert isinstance(price.valid_from, datetime)
         return price.valid_from
 
     # Classify each price point (prices are already sorted chronologically)
@@ -402,11 +404,13 @@ def calculate_heating_schedule(
     previous_category = None
 
     for i, period in enumerate(periods):
-        category = period['category']
+        period_category = period['category']
         period_start = period['start']
+        assert isinstance(period_category, str)
+        assert isinstance(period_start, datetime)
 
         # If exiting LOW price period, set temperature back to average
-        if previous_category == PriceCategory.LOW and category != PriceCategory.LOW:
+        if previous_category == PriceCategory.LOW and period_category != PriceCategory.LOW:
             if current_mode == 'LOW':
                 actions.append(HeatingAction(
                     timestamp=period_start,
@@ -426,7 +430,7 @@ def calculate_heating_schedule(
             ))
             current_mode = None
 
-        if category == PriceCategory.LOW:
+        if period_category == PriceCategory.LOW:
             # Heat to comfort temperature during low prices
             if current_mode != 'LOW':
                 actions.append(HeatingAction(
@@ -437,7 +441,7 @@ def calculate_heating_schedule(
                 ))
                 current_mode = 'LOW'
 
-        elif category == PriceCategory.AVERAGE:
+        elif period_category == PriceCategory.AVERAGE:
             # Maintain basic comfort during average prices
             if current_mode != 'AVERAGE':
                 actions.append(HeatingAction(
@@ -448,7 +452,7 @@ def calculate_heating_schedule(
                 ))
                 current_mode = 'AVERAGE'
 
-        elif category == PriceCategory.HIGH:
+        elif period_category == PriceCategory.HIGH:
             # During HIGH prices, enable ECO mode to minimize costs
             if current_mode != 'ECO':
                 actions.append(HeatingAction(
@@ -459,7 +463,7 @@ def calculate_heating_schedule(
                 ))
                 current_mode = 'ECO'
 
-        previous_category = category
+        previous_category = period_category
 
     # Sort actions by timestamp
     actions.sort(key=lambda a: a.timestamp)
@@ -619,7 +623,7 @@ def run_daily_cycle(config: Config) -> None:
         nest.close()
 
 
-def handle_shutdown_signal(signum, frame):
+def handle_shutdown_signal(signum: int, frame: Any) -> None:
     """Handle SIGINT/SIGTERM for graceful shutdown."""
     global shutdown_requested
     signal_name = signal.Signals(signum).name
@@ -627,7 +631,7 @@ def handle_shutdown_signal(signum, frame):
     shutdown_requested = True
 
 
-def handle_reload_signal(signum, frame):
+def handle_reload_signal(signum: int, frame: Any) -> None:
     """Handle SIGHUP to reload configuration."""
     global reload_config_requested
     logger.debug("Received SIGHUP, will reload configuration")
@@ -810,7 +814,7 @@ def run_dry_run(config: Config) -> int:
         print()
 
         # Helper to find price at a given timestamp
-        def find_price_at(timestamp, prices):
+        def find_price_at(timestamp: datetime, prices: List[PricePoint]) -> Optional[PricePoint]:
             """Find the price point active at a given timestamp."""
             for price in prices:
                 if isinstance(price.valid_from, str):
@@ -857,7 +861,7 @@ def run_dry_run(config: Config) -> int:
     return 0
 
 
-def main():
+def main() -> int:
     """
     Main daemon loop.
 
@@ -985,8 +989,9 @@ def main():
                 sleep_seconds = (next_run - datetime.now()).total_seconds()
 
             # If shutdown was requested during sleep, exit
+            # (Condition already checked in loop, but explicit for clarity)
             if shutdown_requested:
-                break
+                break  # type: ignore[unreachable]
 
             # If config reload was requested during sleep, continue to reload
             if reload_config_requested:

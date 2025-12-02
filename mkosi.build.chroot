@@ -6,6 +6,7 @@ if [ -d usr/src/packages/SOURCES/nest-octopus ]; then
 fi
 
 python3 -m pytest -q
+python3 -m mypy nest_octopus tests
 python3 -m build --skip-dependency-check --wheel --no-isolation --outdir /tmp/o
 python3 -m wheel unpack --dest /tmp/i /tmp/o/nest_octopus-*.whl
 mkdir -p "$DESTDIR/usr/lib/python3/dist-packages/"

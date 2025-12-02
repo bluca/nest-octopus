@@ -13,13 +13,14 @@ import pytest
 import json
 import os
 import socket
+from typing import Any, Dict
 from unittest.mock import Mock, patch, MagicMock
 from nest_octopus.octopus import OctopusEnergyClient, OctopusAPIError, PricePoint
 import requests
 
 
 # Helper function to load fixture files
-def load_fixture(filename):
+def load_fixture(filename: str) -> Dict[str, Any]:
     """
     Load a JSON fixture file from the fixtures directory.
 
@@ -34,12 +35,14 @@ def load_fixture(filename):
 
     with open(filepath, 'r') as f:
         if filename.endswith('.txt'):
-            return f.read()
-        return json.load(f)
+            return f.read()  # type: ignore[return-value]
+        result = json.load(f)
+        assert isinstance(result, dict)
+        return result
 
 
 @pytest.fixture(autouse=True)
-def block_network_access(monkeypatch):
+def block_network_access(monkeypatch: Any) -> None:
     """
     Pytest fixture that runs for ALL tests and prevents any real network access.
 
@@ -47,7 +50,7 @@ def block_network_access(monkeypatch):
     no test can accidentally make a real HTTP request or DNS lookup. If any code
     tries to open a socket or resolve a hostname, it will raise a RuntimeError.
     """
-    def guard(*args, **kwargs):
+    def guard(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError(
             "Network access is blocked in tests! "
             "All HTTP requests must be mocked. "
@@ -59,7 +62,7 @@ def block_network_access(monkeypatch):
 
 
 @pytest.fixture
-def client():
+def client() -> OctopusEnergyClient:
     """Fixture providing an OctopusEnergyClient instance."""
     return OctopusEnergyClient()
 
@@ -67,7 +70,7 @@ def client():
 class TestPricePoint:
     """Test cases for the PricePoint class."""
 
-    def test_price_point_initialization(self):
+    def test_price_point_initialization(self) -> None:
         """Test PricePoint initialization from API data."""
         data = {
             'value_exc_vat': 13.73,
@@ -85,7 +88,7 @@ class TestPricePoint:
         assert price_point.valid_to == '2025-11-30T23:00:00Z'
         assert price_point.payment_method is None
 
-    def test_price_point_repr(self):
+    def test_price_point_repr(self) -> None:
         """Test PricePoint string representation."""
         data = {
             'value_exc_vat': 13.73,
@@ -105,18 +108,18 @@ class TestPricePoint:
 class TestOctopusEnergyClientInitialization:
     """Test cases for OctopusEnergyClient initialization."""
 
-    def test_init_default(self, client):
+    def test_init_default(self, client: Any) -> None:
         """Test default initialization."""
         assert client.base_url == "https://api.octopus.energy/v1"
         assert client.timeout == 30
         assert isinstance(client.session, requests.Session)
 
-    def test_init_custom_timeout(self):
+    def test_init_custom_timeout(self) -> None:
         """Test initialization with custom timeout."""
         client = OctopusEnergyClient(timeout=60)
         assert client.timeout == 60
 
-    def test_base_url_constant(self):
+    def test_base_url_constant(self) -> None:
         """Test that base URL is set correctly."""
         assert OctopusEnergyClient.BASE_URL == "https://api.octopus.energy/v1"
 
@@ -124,7 +127,7 @@ class TestOctopusEnergyClientInitialization:
 class TestExtractProductCode:
     """Test cases for the extract_product_code static method."""
 
-    def test_extract_product_code_valid(self):
+    def test_extract_product_code_valid(self) -> None:
         """Test extracting product code from valid tariff codes."""
         # Standard Agile tariff
         assert OctopusEnergyClient.extract_product_code('E-1R-AGILE-24-10-01-N') == 'AGILE-24-10-01'
@@ -135,7 +138,7 @@ class TestExtractProductCode:
         # Go tariff
         assert OctopusEnergyClient.extract_product_code('E-1R-GO-24-04-03-N') == 'GO-24-04-03'
 
-    def test_extract_product_code_invalid_format(self):
+    def test_extract_product_code_invalid_format(self) -> None:
         """Test that invalid tariff formats raise ValueError."""
         # Too few parts
         with pytest.raises(ValueError, match="Invalid tariff code format"):
@@ -149,7 +152,7 @@ class TestExtractProductCode:
         with pytest.raises(ValueError, match="Invalid tariff code format"):
             OctopusEnergyClient.extract_product_code('INVALID')
 
-    def test_extract_product_code_minimum_parts(self):
+    def test_extract_product_code_minimum_parts(self) -> None:
         """Test minimum valid tariff code (4 parts)."""
         # Minimum: E-1R-PROD-N
         assert OctopusEnergyClient.extract_product_code('E-1R-PROD-N') == 'PROD'
@@ -159,7 +162,7 @@ class TestGetUnitRates:
     """Test cases for the get_unit_rates method."""
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_unit_rates_success(self, mock_get, client):
+    def test_get_unit_rates_success(self, mock_get: Any, client: Any) -> None:
         """Test successful retrieval of unit rates."""
         # Load fixture data
         fixture_data = load_fixture('valid/large_response_46_results.json')
@@ -204,7 +207,7 @@ class TestGetUnitRates:
         )
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_unit_rates_sorted_chronologically(self, mock_get, client):
+    def test_get_unit_rates_sorted_chronologically(self, mock_get: Any, client: Any) -> None:
         """Test that results are sorted in chronological order."""
         # Create fixture with reverse chronological data (as API returns)
         fixture_data = {
@@ -255,7 +258,7 @@ class TestGetUnitRates:
         assert price_points[2].value_inc_vat == 15.75
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_unit_rates_empty_results(self, mock_get, client):
+    def test_get_unit_rates_empty_results(self, mock_get: Any, client: Any) -> None:
         """Test handling of empty results."""
         mock_response = Mock()
         mock_response.status_code = 200
@@ -277,7 +280,7 @@ class TestGetUnitRates:
         assert isinstance(price_points, list)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_unit_rates_timeout(self, mock_get, client):
+    def test_get_unit_rates_timeout(self, mock_get: Any, client: Any) -> None:
         """Test handling of request timeout."""
         mock_get.side_effect = requests.exceptions.Timeout()
 
@@ -291,7 +294,7 @@ class TestGetUnitRates:
         assert 'timed out after 30 seconds' in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_unit_rates_http_404(self, mock_get, client):
+    def test_get_unit_rates_http_404(self, mock_get: Any, client: Any) -> None:
         """Test handling of HTTP 404 error (invalid product/tariff code)."""
         mock_response = Mock()
         mock_response.status_code = 404
@@ -309,7 +312,7 @@ class TestGetUnitRates:
         assert '404' in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_unit_rates_http_500(self, mock_get, client):
+    def test_get_unit_rates_http_500(self, mock_get: Any, client: Any) -> None:
         """Test handling of HTTP 500 error."""
         mock_response = Mock()
         mock_response.status_code = 500
@@ -327,7 +330,7 @@ class TestGetUnitRates:
         assert '500' in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_unit_rates_connection_error(self, mock_get, client):
+    def test_get_unit_rates_connection_error(self, mock_get: Any, client: Any) -> None:
         """Test handling of connection errors."""
         mock_get.side_effect = requests.exceptions.ConnectionError("Failed to connect")
 
@@ -341,7 +344,7 @@ class TestGetUnitRates:
         assert 'Request failed' in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_unit_rates_invalid_json(self, mock_get, client):
+    def test_get_unit_rates_invalid_json(self, mock_get: Any, client: Any) -> None:
         """Test handling of invalid JSON response."""
         mock_response = Mock()
         mock_response.status_code = 200
@@ -358,7 +361,7 @@ class TestGetUnitRates:
         assert 'Invalid JSON response' in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_unit_rates_different_product_codes(self, mock_get, client):
+    def test_get_unit_rates_different_product_codes(self, mock_get: Any, client: Any) -> None:
         """Test with different product and tariff codes."""
         fixture_data = load_fixture('valid/large_response_46_results.json')
 
@@ -382,7 +385,7 @@ class TestGetRawData:
     """Test cases for the get_raw_data method."""
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_raw_data_success(self, mock_get, client):
+    def test_get_raw_data_success(self, mock_get: Any, client: Any) -> None:
         """Test successful retrieval of raw data."""
         fixture_data = load_fixture('valid/large_response_46_results.json')
 
@@ -403,7 +406,7 @@ class TestGetRawData:
         assert raw_data['count'] == 46
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_raw_data_with_pagination(self, mock_get, client):
+    def test_get_raw_data_with_pagination(self, mock_get: Any, client: Any) -> None:
         """Test raw data includes pagination information."""
         response_with_next = {
             'count': 100,
@@ -427,7 +430,7 @@ class TestGetRawData:
         assert 'page=2' in raw_data['next']
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_raw_data_timeout(self, mock_get, client):
+    def test_get_raw_data_timeout(self, mock_get: Any, client: Any) -> None:
         """Test get_raw_data handles timeout errors."""
         mock_get.side_effect = requests.exceptions.Timeout("Connection timeout")
 
@@ -441,7 +444,7 @@ class TestGetRawData:
         assert "timed out" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_raw_data_http_error(self, mock_get, client):
+    def test_get_raw_data_http_error(self, mock_get: Any, client: Any) -> None:
         """Test get_raw_data handles HTTP errors."""
         mock_response = Mock()
         mock_response.status_code = 500
@@ -459,7 +462,7 @@ class TestGetRawData:
         assert "HTTP error" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_raw_data_connection_error(self, mock_get, client):
+    def test_get_raw_data_connection_error(self, mock_get: Any, client: Any) -> None:
         """Test get_raw_data handles connection errors."""
         mock_get.side_effect = requests.exceptions.ConnectionError("Network unreachable")
 
@@ -473,7 +476,7 @@ class TestGetRawData:
         assert "Request failed" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_raw_data_invalid_json(self, mock_get, client):
+    def test_get_raw_data_invalid_json(self, mock_get: Any, client: Any) -> None:
         """Test get_raw_data handles invalid JSON."""
         mock_response = Mock()
         mock_response.status_code = 200
@@ -494,7 +497,7 @@ class TestContextManager:
     """Test cases for context manager functionality."""
 
     @patch('nest_octopus.octopus.requests.Session.close')
-    def test_context_manager(self, mock_close):
+    def test_context_manager(self, mock_close: Any) -> None:
         """Test OctopusEnergyClient can be used as a context manager."""
         with OctopusEnergyClient() as client:
             assert isinstance(client, OctopusEnergyClient)
@@ -503,7 +506,7 @@ class TestContextManager:
         mock_close.assert_called_once()
 
     @patch('nest_octopus.octopus.requests.Session.close')
-    def test_close_method(self, mock_close):
+    def test_close_method(self, mock_close: Any) -> None:
         """Test explicit close method."""
         client = OctopusEnergyClient()
         client.close()
@@ -515,7 +518,7 @@ class TestIntegrationScenarios:
     """Integration-style tests with realistic scenarios."""
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_multiple_sequential_requests(self, mock_get, client):
+    def test_multiple_sequential_requests(self, mock_get: Any, client: Any) -> None:
         """Test making multiple sequential requests with the same client."""
         # Setup different responses for different time periods
         response1 = load_fixture('valid/large_response_46_results.json')
@@ -564,7 +567,7 @@ class TestIntegrationScenarios:
         assert mock_get.call_count == 2
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_realistic_usage_pattern(self, mock_get, client):
+    def test_realistic_usage_pattern(self, mock_get: Any, client: Any) -> None:
         """Test realistic usage pattern: get rates and process them."""
         fixture_data = load_fixture('valid/large_response_46_results.json')
 
@@ -595,7 +598,7 @@ class TestValidFixtures:
     """Test cases using valid fixture files."""
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_standard_response_fixture(self, mock_get, client):
+    def test_standard_response_fixture(self, mock_get: Any, client: Any) -> None:
         """Test using the standard_response fixture."""
         fixture_data = load_fixture('valid/standard_response.json')
 
@@ -619,7 +622,7 @@ class TestValidFixtures:
         assert all(isinstance(p, PricePoint) for p in price_points)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_empty_results_fixture(self, mock_get, client):
+    def test_empty_results_fixture(self, mock_get: Any, client: Any) -> None:
         """Test handling of empty results from fixture."""
         fixture_data = load_fixture('valid/empty_results.json')
 
@@ -638,7 +641,7 @@ class TestValidFixtures:
         assert isinstance(price_points, list)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_paginated_response_fixture(self, mock_get, client):
+    def test_paginated_response_fixture(self, mock_get: Any, client: Any) -> None:
         """Test response with pagination."""
         fixture_data = load_fixture('valid/paginated_response.json')
 
@@ -658,7 +661,7 @@ class TestValidFixtures:
         assert 'page=2' in raw_data['next']
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_high_low_prices_fixture(self, mock_get, client):
+    def test_high_low_prices_fixture(self, mock_get: Any, client: Any) -> None:
         """Test extreme price values."""
         fixture_data = load_fixture('valid/high_low_prices.json')
 
@@ -678,7 +681,7 @@ class TestValidFixtures:
         assert max(prices) == 54.915  # Very high price
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_single_result_fixture(self, mock_get, client):
+    def test_single_result_fixture(self, mock_get: Any, client: Any) -> None:
         """Test response with single price point."""
         fixture_data = load_fixture('valid/single_result.json')
 
@@ -697,7 +700,7 @@ class TestValidFixtures:
         assert price_points[0].value_inc_vat == 26.25
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_negative_prices_fixture(self, mock_get, client):
+    def test_negative_prices_fixture(self, mock_get: Any, client: Any) -> None:
         """Test handling of zero and negative prices (can occur in real data)."""
         fixture_data = load_fixture('valid/negative_prices.json')
 
@@ -721,7 +724,7 @@ class TestLargeResponseFixture:
     """Test cases specifically for the large 46-result dataset."""
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_large_response_46_results(self, mock_get, client):
+    def test_large_response_46_results(self, mock_get: Any, client: Any) -> None:
         """Test handling of large response with 46 price points."""
         fixture_data = load_fixture('valid/large_response_46_results.json')
 
@@ -750,7 +753,7 @@ class TestLargeResponseFixture:
         assert price_points[-1].value_inc_vat == 14.4165
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_large_response_statistics(self, mock_get, client):
+    def test_large_response_statistics(self, mock_get: Any, client: Any) -> None:
         """Test statistical analysis on large dataset."""
         fixture_data = load_fixture('valid/large_response_46_results.json')
 
@@ -784,7 +787,7 @@ class TestInvalidFixtures:
     """Test cases using invalid fixture files to ensure proper error handling."""
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_missing_value_exc_vat(self, mock_get, client):
+    def test_missing_value_exc_vat(self, mock_get: Any, client: Any) -> None:
         """Test handling of missing required field."""
         fixture_data = load_fixture('invalid/missing_value_exc_vat.json')
 
@@ -803,7 +806,7 @@ class TestInvalidFixtures:
         assert 'Invalid JSON response' in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_missing_valid_from(self, mock_get, client):
+    def test_missing_valid_from(self, mock_get: Any, client: Any) -> None:
         """Test handling of missing timestamp field."""
         fixture_data = load_fixture('invalid/missing_valid_from.json')
 
@@ -822,7 +825,7 @@ class TestInvalidFixtures:
         assert 'Invalid JSON response' in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_missing_results_field(self, mock_get, client):
+    def test_missing_results_field(self, mock_get: Any, client: Any) -> None:
         """Test handling of missing results array - returns empty list gracefully."""
         fixture_data = load_fixture('invalid/missing_results.json')
 
@@ -843,7 +846,7 @@ class TestInvalidFixtures:
         assert isinstance(price_points, list)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_malformed_json_response(self, mock_get, client):
+    def test_malformed_json_response(self, mock_get: Any, client: Any) -> None:
         """Test handling of completely invalid JSON."""
         mock_response = Mock()
         mock_response.status_code = 200
@@ -863,7 +866,7 @@ class TestInvalidFixtures:
 class TestNoNetworkAccess:
     """Test that verifies the network blocking fixture is working."""
 
-    def test_network_access_is_blocked(self):
+    def test_network_access_is_blocked(self) -> None:
         """Verify that socket access is blocked by our fixture."""
         import socket
 
@@ -873,7 +876,7 @@ class TestNoNetworkAccess:
 
         assert "Network access is blocked in tests" in str(exc_info.value)
 
-    def test_unmocked_request_would_fail(self, client):
+    def test_unmocked_request_would_fail(self, client: Any) -> None:
         """Verify that an unmocked API call would fail (network is blocked)."""
         # This test verifies that if we forgot to mock, the test would fail
         # rather than making a real network call
@@ -893,7 +896,7 @@ class TestNoNetworkAccess:
 class TestApiKeyAndAccountNumber:
     """Test API key and account number initialization."""
 
-    def test_init_with_api_key_and_account(self):
+    def test_init_with_api_key_and_account(self) -> None:
         """Test client initialization with API key and account number."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -905,7 +908,7 @@ class TestApiKeyAndAccountNumber:
         assert client._cached_tariff_code is None
         assert client._cache_expires_at is None
 
-    def test_init_without_api_key_and_account(self):
+    def test_init_without_api_key_and_account(self) -> None:
         """Test client initialization without API key and account number."""
         client = OctopusEnergyClient()
 
@@ -918,7 +921,7 @@ class TestGetCurrentTariffCode:
     """Test fetching current tariff code from account."""
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_success(self, mock_get):
+    def test_get_current_tariff_code_success(self, mock_get: Any) -> None:
         """Test successful tariff code fetch from account."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -943,7 +946,7 @@ class TestGetCurrentTariffCode:
         assert call_kwargs['auth'] == ('sk_live_test_key', '')
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_openended(self, mock_get):
+    def test_get_current_tariff_code_openended(self, mock_get: Any) -> None:
         """Test tariff code fetch with open-ended agreement."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -960,7 +963,7 @@ class TestGetCurrentTariffCode:
 
         assert tariff_code == 'E-1R-AGILE-24-10-01-N'
 
-    def test_get_current_tariff_code_no_credentials(self):
+    def test_get_current_tariff_code_no_credentials(self) -> None:
         """Test that error is raised when API key/account not provided."""
         client = OctopusEnergyClient()
 
@@ -970,7 +973,7 @@ class TestGetCurrentTariffCode:
         assert "API key and account number required" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_http_error(self, mock_get):
+    def test_get_current_tariff_code_http_error(self, mock_get: Any) -> None:
         """Test handling of HTTP errors."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -995,7 +998,7 @@ class TestGetCurrentTariffCode:
         assert "HTTP error occurred" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_no_properties(self, mock_get):
+    def test_get_current_tariff_code_no_properties(self, mock_get: Any) -> None:
         """Test handling when account has no properties."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -1013,7 +1016,7 @@ class TestGetCurrentTariffCode:
         assert "No properties found" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_no_electricity_meters(self, mock_get):
+    def test_get_current_tariff_code_no_electricity_meters(self, mock_get: Any) -> None:
         """Test handling when property has no electricity meters."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -1034,7 +1037,7 @@ class TestGetCurrentTariffCode:
         assert "No electricity meter points found" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_multiple_meters_no_mpan(self, mock_get):
+    def test_get_current_tariff_code_multiple_meters_no_mpan(self, mock_get: Any) -> None:
         """Test error when multiple meters and no MPAN specified."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -1054,7 +1057,7 @@ class TestGetCurrentTariffCode:
         assert "9876543210987" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_multiple_meters_with_mpan(self, mock_get):
+    def test_get_current_tariff_code_multiple_meters_with_mpan(self, mock_get: Any) -> None:
         """Test filtering by MPAN when multiple meters exist."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -1072,7 +1075,7 @@ class TestGetCurrentTariffCode:
         assert tariff_code == 'E-1R-FLEX-24-11-01-N'
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_invalid_mpan(self, mock_get):
+    def test_get_current_tariff_code_invalid_mpan(self, mock_get: Any) -> None:
         """Test error when specified MPAN doesn't match any meter."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -1092,7 +1095,7 @@ class TestGetCurrentTariffCode:
         assert "1234567890123" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_timeout(self, mock_get):
+    def test_get_current_tariff_code_timeout(self, mock_get: Any) -> None:
         """Test handling of timeout errors."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -1107,7 +1110,7 @@ class TestGetCurrentTariffCode:
         assert "timed out" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_connection_error(self, mock_get):
+    def test_get_current_tariff_code_connection_error(self, mock_get: Any) -> None:
         """Test handling of connection errors."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -1122,7 +1125,7 @@ class TestGetCurrentTariffCode:
         assert "Request failed" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_invalid_json(self, mock_get):
+    def test_get_current_tariff_code_invalid_json(self, mock_get: Any) -> None:
         """Test handling of invalid JSON response."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -1140,7 +1143,7 @@ class TestGetCurrentTariffCode:
         assert "Invalid JSON response" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_no_agreements(self, mock_get):
+    def test_get_current_tariff_code_no_agreements(self, mock_get: Any) -> None:
         """Test handling when meter has no tariff agreements."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -1167,7 +1170,7 @@ class TestGetCurrentTariffCode:
         assert "No tariff agreements found" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_no_current_agreement(self, mock_get):
+    def test_get_current_tariff_code_no_current_agreement(self, mock_get: Any) -> None:
         """Test handling when no currently valid agreement exists."""
         from datetime import datetime
 
@@ -1201,7 +1204,7 @@ class TestGetCurrentTariffCode:
         assert "No currently valid tariff agreement found" in str(exc_info.value)
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_current_tariff_code_only_export_meters(self, mock_get):
+    def test_get_current_tariff_code_only_export_meters(self, mock_get: Any) -> None:
         """Test handling when only export meters exist."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -1236,7 +1239,7 @@ class TestTariffCodeCaching:
 
     @patch('nest_octopus.octopus.requests.Session.get')
     @patch('nest_octopus.octopus.time.monotonic_ns')
-    def test_cache_used_within_validity_period(self, mock_monotonic_ns, mock_get):
+    def test_cache_used_within_validity_period(self, mock_monotonic_ns: Any, mock_get: Any) -> None:
         """Test that cached tariff code is used when still valid."""
         # Start at monotonic time 1000 seconds (in nanoseconds)
         mock_monotonic_ns.return_value = 1000 * 1_000_000_000
@@ -1266,7 +1269,7 @@ class TestTariffCodeCaching:
 
     @patch('nest_octopus.octopus.requests.Session.get')
     @patch('nest_octopus.octopus.time.monotonic_ns')
-    def test_cache_expires_after_12_hours(self, mock_monotonic_ns, mock_get):
+    def test_cache_expires_after_12_hours(self, mock_monotonic_ns: Any, mock_get: Any) -> None:
         """Test that cache expires after 12 hours."""
         # Start at monotonic time 1000 seconds (in nanoseconds)
         mock_monotonic_ns.return_value = 1000 * 1_000_000_000
@@ -1296,7 +1299,7 @@ class TestTariffCodeCaching:
     @patch('nest_octopus.octopus.requests.Session.get')
     @patch('nest_octopus.octopus.time.monotonic_ns')
     @patch('nest_octopus.octopus.datetime')
-    def test_cache_expires_when_tariff_ends(self, mock_datetime, mock_monotonic_ns, mock_get):
+    def test_cache_expires_when_tariff_ends(self, mock_datetime: Any, mock_monotonic_ns: Any, mock_get: Any) -> None:
         """Test that cache expires when tariff validity ends."""
         from datetime import datetime
 
@@ -1341,7 +1344,7 @@ class TestTariffCodeCaching:
 
     @patch('nest_octopus.octopus.requests.Session.get')
     @patch('nest_octopus.octopus.time.monotonic_ns')
-    def test_openended_tariff_only_expires_by_time(self, mock_monotonic_ns, mock_get):
+    def test_openended_tariff_only_expires_by_time(self, mock_monotonic_ns: Any, mock_get: Any) -> None:
         """Test that open-ended tariff cache only expires by time."""
         # Start at monotonic time 1000 seconds (in nanoseconds)
         mock_monotonic_ns.return_value = 1000 * 1_000_000_000
@@ -1376,7 +1379,7 @@ class TestGetUnitRatesWithAutoTariff:
     """Test get_unit_rates with automatic tariff code lookup."""
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_unit_rates_auto_fetches_tariff(self, mock_get):
+    def test_get_unit_rates_auto_fetches_tariff(self, mock_get: Any) -> None:
         """Test that get_unit_rates automatically fetches tariff code."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',
@@ -1394,7 +1397,7 @@ class TestGetUnitRatesWithAutoTariff:
         rates_response.json.return_value = load_fixture('valid/standard_response.json')
 
         # Setup mock to return different responses for different URLs
-        def mock_get_side_effect(url, **kwargs):
+        def mock_get_side_effect(url: str, **kwargs: Any) -> Mock:
             if 'accounts' in url:
                 return account_response
             else:
@@ -1413,7 +1416,7 @@ class TestGetUnitRatesWithAutoTariff:
         assert len(prices) > 0
 
     @patch('nest_octopus.octopus.requests.Session.get')
-    def test_get_unit_rates_uses_explicit_tariff(self, mock_get):
+    def test_get_unit_rates_uses_explicit_tariff(self, mock_get: Any) -> None:
         """Test that explicit tariff code bypasses account lookup."""
         client = OctopusEnergyClient(
             api_key='sk_live_test_key',

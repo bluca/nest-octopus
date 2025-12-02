@@ -9,6 +9,7 @@ making any real network requests. All API responses are mocked using fixtures.
 import json
 import socket
 from pathlib import Path
+from typing import Any, Dict
 from unittest.mock import Mock, patch
 
 import pytest
@@ -31,7 +32,7 @@ INVALID_DIR = FIXTURES_DIR / "invalid"
 
 
 @pytest.fixture(autouse=True)
-def block_network_access(monkeypatch):
+def block_network_access(monkeypatch: Any) -> None:
     """
     Prevent any real network access during tests.
 
@@ -39,7 +40,7 @@ def block_network_access(monkeypatch):
     It monkeypatches socket.socket to raise an error if any code tries
     to create a network connection.
     """
-    def guard(*args, **kwargs):
+    def guard(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError(
             "Network access detected! Tests should not make real network calls."
         )
@@ -48,7 +49,7 @@ def block_network_access(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def mock_token_refresh():
+def mock_token_refresh() -> Any:
     """
     Mock the OAuth2 token refresh for all tests.
 
@@ -66,7 +67,7 @@ def mock_token_refresh():
 
 
 @pytest.fixture
-def mock_device_selection():
+def mock_device_selection() -> Any:
     """
     Mock _select_device during client initialization to prevent network calls.
     Returns a test device ID by default.
@@ -77,7 +78,7 @@ def mock_device_selection():
         yield
 
 
-def load_fixture(filename: str) -> dict:
+def load_fixture(filename: str) -> Dict[str, Any]:
     """
     Load a JSON fixture file.
 
@@ -99,15 +100,19 @@ def load_fixture(filename: str) -> dict:
 
     if valid_path.exists():
         with open(valid_path) as f:
-            return json.load(f)
+            result = json.load(f)
+            assert isinstance(result, dict)
+            return result
     elif invalid_path.exists():
         with open(invalid_path) as f:
-            return json.load(f)
+            result = json.load(f)
+            assert isinstance(result, dict)
+            return result
     else:
         raise FileNotFoundError(f"Fixture not found: {filename}")
 
 
-def create_test_client():
+def create_test_client() -> NestThermostatClient:
     """Create a NestThermostatClient for testing with standard credentials."""
     return NestThermostatClient(
         project_id="test-project",
@@ -121,7 +126,7 @@ def create_test_client():
 class TestThermostatStatus:
     """Test the ThermostatStatus dataclass."""
 
-    def test_parse_device_data_heat_mode(self):
+    def test_parse_device_data_heat_mode(self) -> None:
         """Test parsing device data in HEAT mode."""
         data = load_fixture("device_heat_mode.json")
         status = ThermostatStatus(data)
@@ -135,7 +140,7 @@ class TestThermostatStatus:
         assert status.temperature == 18.5
         assert status.humidity == 45.0
 
-    def test_parse_device_data_cool_mode(self):
+    def test_parse_device_data_cool_mode(self) -> None:
         """Test parsing device data in COOL mode."""
         data = load_fixture("device_cool_mode.json")
         status = ThermostatStatus(data)
@@ -148,7 +153,7 @@ class TestThermostatStatus:
         assert status.cool_setpoint == 22.0
         assert status.temperature == 24.5
 
-    def test_parse_device_data_heatcool_mode(self):
+    def test_parse_device_data_heatcool_mode(self) -> None:
         """Test parsing device data in HEATCOOL mode."""
         data = load_fixture("device_heatcool_mode.json")
         status = ThermostatStatus(data)
@@ -161,7 +166,7 @@ class TestThermostatStatus:
         assert status.cool_setpoint == 24.0
         assert status.temperature == 21.0
 
-    def test_parse_device_data_eco_mode(self):
+    def test_parse_device_data_eco_mode(self) -> None:
         """Test parsing device data in ECO mode."""
         data = load_fixture("device_eco_mode.json")
         status = ThermostatStatus(data)
@@ -170,7 +175,7 @@ class TestThermostatStatus:
         assert status.eco_mode == "MANUAL_ECO"
         assert status.temperature == 19.0
 
-    def test_parse_device_data_offline(self):
+    def test_parse_device_data_offline(self) -> None:
         """Test parsing device data for offline device."""
         data = load_fixture("device_offline.json")
         status = ThermostatStatus(data)
@@ -183,7 +188,7 @@ class TestThermostatStatus:
 class TestNestThermostatClientInit:
     """Test NestThermostatClient initialization."""
 
-    def test_init_success(self):
+    def test_init_success(self) -> None:
         """Test successful client initialization."""
         client = NestThermostatClient(
             project_id="test-project",
@@ -200,7 +205,7 @@ class TestNestThermostatClientInit:
         # Access token comes from the OAuth2 token refresh fixture
         assert client.access_token == "ya29.a0AfB_byD1234567890abcdefghijklmnopqrstuvwxyz"
 
-    def test_context_manager(self):
+    def test_context_manager(self) -> None:
         """Test using client as context manager."""
         with NestThermostatClient(
             "test-project",
@@ -212,7 +217,7 @@ class TestNestThermostatClientInit:
             # Session exists during context
             assert client.session is not None
 
-    def test_token_refresh_on_init(self, mock_token_refresh):
+    def test_token_refresh_on_init(self, mock_token_refresh: Any) -> None:
         """Test that refresh token is used during initialization."""
         client = create_test_client()
 
@@ -235,7 +240,7 @@ class TestDeviceSelection:
     """Test automatic device selection during initialization."""
 
     @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
-    def test_single_device_auto_selected(self, mock_list_devices):
+    def test_single_device_auto_selected(self, mock_list_devices: Any) -> None:
         """Test that a single device is automatically selected."""
         single_device = [{
             'name': 'enterprises/test-project/devices/device-123',
@@ -259,7 +264,7 @@ class TestDeviceSelection:
         mock_list_devices.assert_called_once()
 
     @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
-    def test_multiple_devices_with_display_name(self, mock_list_devices):
+    def test_multiple_devices_with_display_name(self, mock_list_devices: Any) -> None:
         """Test device selection with multiple devices using display_name."""
         multiple_devices = [
             {
@@ -304,7 +309,7 @@ class TestDeviceSelection:
         mock_list_devices.assert_called_once()
 
     @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
-    def test_multiple_devices_without_display_name_raises_error(self, mock_list_devices):
+    def test_multiple_devices_without_display_name_raises_error(self, mock_list_devices: Any) -> None:
         """Test that missing display_name with multiple devices raises error."""
         multiple_devices = [
             {
@@ -337,7 +342,7 @@ class TestDeviceSelection:
             )
 
     @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
-    def test_display_name_not_found_raises_error(self, mock_list_devices):
+    def test_display_name_not_found_raises_error(self, mock_list_devices: Any) -> None:
         """Test that invalid display_name raises error with available options."""
         multiple_devices = [
             {
@@ -371,7 +376,7 @@ class TestDeviceSelection:
             )
 
     @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
-    def test_no_devices_raises_error(self, mock_list_devices):
+    def test_no_devices_raises_error(self, mock_list_devices: Any) -> None:
         """Test that no devices raises error."""
         mock_list_devices.return_value = []
 
@@ -384,7 +389,7 @@ class TestDeviceSelection:
             )
 
     @patch('nest_octopus.nest_thermostat.NestThermostatClient.list_devices')
-    def test_multiple_parent_relations_matches_first(self, mock_list_devices):
+    def test_multiple_parent_relations_matches_first(self, mock_list_devices: Any) -> None:
         """Test device with multiple parent relations matches on first matching displayName."""
         devices = [
             {
@@ -421,7 +426,7 @@ class TestOAuth2TokenRefresh:
     """Test OAuth2 token refresh functionality."""
 
     @patch('nest_octopus.nest_thermostat.requests.post')
-    def test_token_refresh_full_response(self, mock_post):
+    def test_token_refresh_full_response(self, mock_post: Any) -> None:
         """Test token refresh with full response."""
         fixture_data = load_fixture("oauth_token_response_full.json")
         mock_response = Mock()
@@ -446,7 +451,7 @@ class TestOAuth2TokenRefresh:
         assert call_args[1]['params']['refresh_token'] == 'test-refresh-token'
 
     @patch('nest_octopus.nest_thermostat.requests.post')
-    def test_token_refresh_minimal_response(self, mock_post):
+    def test_token_refresh_minimal_response(self, mock_post: Any) -> None:
         """Test token refresh with minimal response."""
         fixture_data = load_fixture("oauth_token_response_minimal.json")
         mock_response = Mock()
@@ -461,7 +466,7 @@ class TestOAuth2TokenRefresh:
         assert client.token_expiry is not None
 
     @patch('nest_octopus.nest_thermostat.requests.post')
-    def test_token_refresh_on_expiry(self, mock_post):
+    def test_token_refresh_on_expiry(self, mock_post: Any) -> None:
         """Test that token is refreshed when expired."""
         # First call: initial refresh
         first_fixture = load_fixture("oauth_token_response_full.json")
@@ -499,7 +504,7 @@ class TestOAuth2TokenRefresh:
         assert second_call_args[1]['params']['refresh_token'] == 'test-refresh-token'
 
     @patch('nest_octopus.nest_thermostat.requests.post')
-    def test_token_refresh_short_expiry(self, mock_post):
+    def test_token_refresh_short_expiry(self, mock_post: Any) -> None:
         """Test token with short expiry time."""
         fixture_data = load_fixture("oauth_token_response_short_expiry.json")
         mock_response = Mock()
@@ -520,7 +525,7 @@ class TestOAuth2TokenRefresh:
         assert time_until_expiry <= 5  # Allow small margin for test execution time
 
     @patch('nest_octopus.nest_thermostat.requests.post')
-    def test_token_refresh_missing_access_token(self, mock_post):
+    def test_token_refresh_missing_access_token(self, mock_post: Any) -> None:
         """Test error when access_token is missing from response."""
         fixture_data = load_fixture("oauth_missing_access_token.json")
         mock_response = Mock()
@@ -534,7 +539,7 @@ class TestOAuth2TokenRefresh:
         assert "access_token" in str(exc_info.value).lower()
 
     @patch('nest_octopus.nest_thermostat.requests.post')
-    def test_token_refresh_http_error(self, mock_post):
+    def test_token_refresh_http_error(self, mock_post: Any) -> None:
         """Test handling of HTTP errors during token refresh."""
         fixture_data = load_fixture("oauth_error_invalid_grant.json")
         mock_response = Mock()
@@ -559,7 +564,7 @@ class TestExpiredTokenHandling:
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
     @patch('nest_octopus.nest_thermostat.requests.post')
-    def test_list_devices_with_expired_token(self, mock_post, mock_get):
+    def test_list_devices_with_expired_token(self, mock_post: Any, mock_get: Any) -> None:
         """Test that list_devices automatically refreshes expired token and retries."""
         # Setup: Mock initial token refresh
         initial_data = load_fixture("oauth_token_response_full.json")
@@ -611,7 +616,7 @@ class TestExpiredTokenHandling:
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
     @patch('nest_octopus.nest_thermostat.requests.post')
-    def test_get_device_with_expired_token(self, mock_post, mock_get):
+    def test_get_device_with_expired_token(self, mock_post: Any, mock_get: Any) -> None:
         """Test that get_device automatically refreshes expired token and retries."""
         # Setup: Mock initial token refresh
         initial_data = load_fixture("oauth_token_response_full.json")
@@ -662,7 +667,7 @@ class TestExpiredTokenHandling:
         assert mock_get.call_count == 2
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_mode_with_expired_token(self, mock_session_post):
+    def test_set_mode_with_expired_token(self, mock_session_post: Any) -> None:
         """Test that set_mode automatically refreshes expired token and retries."""
         # We need to mock both requests.post (for OAuth) and Session.post (for commands)
         with patch('nest_octopus.nest_thermostat.requests.post') as mock_oauth_post:
@@ -712,7 +717,7 @@ class TestExpiredTokenHandling:
             assert mock_session_post.call_count == 2
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_heat_with_expired_token(self, mock_session_post):
+    def test_set_heat_with_expired_token(self, mock_session_post: Any) -> None:
         """Test that set_heat automatically refreshes expired token and retries."""
         with patch('nest_octopus.nest_thermostat.requests.post') as mock_oauth_post:
             # First: auth code exchange
@@ -758,7 +763,7 @@ class TestExpiredTokenHandling:
             assert mock_session_post.call_count == 2
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_fan_with_expired_token(self, mock_session_post):
+    def test_set_fan_with_expired_token(self, mock_session_post: Any) -> None:
         """Test that set_fan automatically refreshes expired token and retries."""
         with patch('nest_octopus.nest_thermostat.requests.post') as mock_oauth_post:
             # First: auth code exchange
@@ -805,7 +810,7 @@ class TestExpiredTokenHandling:
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
     @patch('nest_octopus.nest_thermostat.requests.post')
-    def test_expired_token_only_retries_once(self, mock_post, mock_get):
+    def test_expired_token_only_retries_once(self, mock_post: Any, mock_get: Any) -> None:
         """Test that expired token error only retries once, not infinitely."""
         # Setup: Mock initial auth code exchange
         auth_data = load_fixture("oauth_auth_code_exchange_full.json")
@@ -849,7 +854,7 @@ class TestExpiredTokenHandling:
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
     @patch('nest_octopus.nest_thermostat.requests.post')
-    def test_non_token_401_error_not_retried(self, mock_post, mock_get):
+    def test_non_token_401_error_not_retried(self, mock_post: Any, mock_get: Any) -> None:
         """Test that 401 errors without UNAUTHENTICATED status are not retried."""
         # Setup: Mock initial auth code exchange
         auth_data = load_fixture("oauth_auth_code_exchange_full.json")
@@ -889,7 +894,7 @@ class TestListDevices:
     """Test listing devices."""
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
-    def test_list_devices_success(self, mock_get):
+    def test_list_devices_success(self, mock_get: Any) -> None:
         """Test successfully listing devices."""
         fixture_data = load_fixture("list_devices.json")
         mock_response = Mock()
@@ -910,7 +915,7 @@ class TestListDevices:
         assert "enterprises/test-project/devices" in call_args[0][0]
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
-    def test_list_devices_empty(self, mock_get):
+    def test_list_devices_empty(self, mock_get: Any) -> None:
         """Test listing devices when none exist."""
         fixture_data = load_fixture("empty_device_list.json")
         mock_response = Mock()
@@ -924,7 +929,7 @@ class TestListDevices:
         assert devices == []
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
-    def test_list_devices_auth_error(self, mock_get):
+    def test_list_devices_auth_error(self, mock_get: Any) -> None:
         """Test authentication error when listing devices."""
         fixture_data = load_fixture("error_unauthenticated.json")
         mock_response = Mock()
@@ -946,7 +951,7 @@ class TestListDevices:
         assert "401" in str(exc_info.value)
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
-    def test_list_devices_permission_error(self, mock_get):
+    def test_list_devices_permission_error(self, mock_get: Any) -> None:
         """Test permission denied error when listing devices."""
         fixture_data = load_fixture("error_permission_denied.json")
         mock_response = Mock()
@@ -973,7 +978,7 @@ class TestGetDevice:
     """Test getting a specific device."""
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
-    def test_get_device_success(self, mock_get):
+    def test_get_device_success(self, mock_get: Any) -> None:
         """Test successfully getting a device."""
         fixture_data = load_fixture("device_heat_mode.json")
         mock_response = Mock()
@@ -994,7 +999,7 @@ class TestGetDevice:
         assert "device-id-1" in call_args[0][0]
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
-    def test_get_device_not_found(self, mock_get):
+    def test_get_device_not_found(self, mock_get: Any) -> None:
         """Test getting a non-existent device."""
         fixture_data = load_fixture("error_not_found.json")
         mock_response = Mock()
@@ -1016,7 +1021,7 @@ class TestGetDevice:
         assert "404" in str(exc_info.value)
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
-    def test_get_device_different_modes(self, mock_get):
+    def test_get_device_different_modes(self, mock_get: Any) -> None:
         """Test getting devices in different modes."""
         fixtures = [
             ("device_heat_mode.json", "HEAT"),
@@ -1043,7 +1048,7 @@ class TestSetMode:
     """Test setting thermostat mode."""
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_mode_heat(self, mock_post):
+    def test_set_mode_heat(self, mock_post: Any) -> None:
         """Test setting mode to HEAT."""
         fixture_data = load_fixture("command_success_empty.json")
         mock_response = Mock()
@@ -1064,7 +1069,7 @@ class TestSetMode:
         assert request_json["params"]["mode"] == "HEAT"
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_mode_all_modes(self, mock_post):
+    def test_set_mode_all_modes(self, mock_post: Any) -> None:
         """Test setting all available modes."""
         fixture_data = load_fixture("command_success_empty.json")
         mock_response = Mock()
@@ -1081,7 +1086,7 @@ class TestSetMode:
             assert request_json["params"]["mode"] == mode.value
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_eco_mode(self, mock_post):
+    def test_set_eco_mode(self, mock_post: Any) -> None:
         """Test setting ECO mode."""
         fixture_data = load_fixture("command_success_empty.json")
         mock_response = Mock()
@@ -1103,7 +1108,7 @@ class TestSetTemperature:
     """Test setting temperature setpoints."""
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_heat_temperature(self, mock_post):
+    def test_set_heat_temperature(self, mock_post: Any) -> None:
         """Test setting heat setpoint."""
         fixture_data = load_fixture("command_success_empty.json")
         mock_response = Mock()
@@ -1120,7 +1125,7 @@ class TestSetTemperature:
         assert request_json["params"]["heatCelsius"] == 20.5
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_cool_temperature(self, mock_post):
+    def test_set_cool_temperature(self, mock_post: Any) -> None:
         """Test setting cool setpoint."""
         fixture_data = load_fixture("command_success_empty.json")
         mock_response = Mock()
@@ -1137,7 +1142,7 @@ class TestSetTemperature:
         assert request_json["params"]["coolCelsius"] == 24.0
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_range_temperature(self, mock_post):
+    def test_set_range_temperature(self, mock_post: Any) -> None:
         """Test setting temperature range."""
         fixture_data = load_fixture("command_success_empty.json")
         mock_response = Mock()
@@ -1155,7 +1160,7 @@ class TestSetTemperature:
         assert request_json["params"]["coolCelsius"] == 24.0
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_temperature_failed_precondition(self, mock_post):
+    def test_set_temperature_failed_precondition(self, mock_post: Any) -> None:
         """Test temperature setting with wrong mode."""
         fixture_data = load_fixture("error_failed_precondition.json")
         mock_response = Mock()
@@ -1177,7 +1182,7 @@ class TestSetTemperature:
         assert "400" in str(exc_info.value)
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_range_invalid_argument(self, mock_post):
+    def test_set_range_invalid_argument(self, mock_post: Any) -> None:
         """Test setting invalid temperature range."""
         fixture_data = load_fixture("error_invalid_argument.json")
         mock_response = Mock()
@@ -1204,7 +1209,7 @@ class TestSetFan:
     """Test setting fan mode."""
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_fan_on(self, mock_post):
+    def test_set_fan_on(self, mock_post: Any) -> None:
         """Test turning fan on."""
         fixture_data = load_fixture("command_success_empty.json")
         mock_response = Mock()
@@ -1222,7 +1227,7 @@ class TestSetFan:
         assert request_json["params"]["duration"] == "900s"
 
     @patch('nest_octopus.nest_thermostat.requests.Session.post')
-    def test_set_fan_off(self, mock_post):
+    def test_set_fan_off(self, mock_post: Any) -> None:
         """Test turning fan off."""
         fixture_data = load_fixture("command_success_empty.json")
         mock_response = Mock()
@@ -1244,7 +1249,7 @@ class TestSetFan:
 class TestValidFixtures:
     """Test that all valid fixtures can be parsed correctly."""
 
-    def test_all_valid_fixtures_parse(self):
+    def test_all_valid_fixtures_parse(self) -> None:
         """Verify all valid fixtures can be loaded and parsed."""
         valid_fixtures = list(VALID_DIR.glob("*.json"))
         assert len(valid_fixtures) > 0, "No valid fixtures found"
@@ -1261,7 +1266,7 @@ class TestValidFixtures:
                 status = ThermostatStatus(data)
                 assert status.device_id is not None
 
-    def test_empty_custom_name(self):
+    def test_empty_custom_name(self) -> None:
         """Test device with empty customName field."""
         data = load_fixture("device_empty_customname.json")
         status = ThermostatStatus(data)
@@ -1272,7 +1277,7 @@ class TestValidFixtures:
         assert status.mode == "HEAT"
         assert status.heat_setpoint == 16.906097
 
-    def test_limited_available_modes(self):
+    def test_limited_available_modes(self) -> None:
         """Test device with limited available modes (only HEAT and OFF)."""
         data = load_fixture("device_limited_modes.json")
         status = ThermostatStatus(data)
@@ -1282,7 +1287,7 @@ class TestValidFixtures:
         assert status.hvac_status == "HEATING"
         assert status.heat_setpoint == 19.5
 
-    def test_precise_temperature_values(self):
+    def test_precise_temperature_values(self) -> None:
         """Test device with precise decimal temperature values."""
         data = load_fixture("device_precise_temperatures.json")
         status = ThermostatStatus(data)
@@ -1293,7 +1298,7 @@ class TestValidFixtures:
         assert status.cool_setpoint == 21.666667
         assert status.mode == "HEATCOOL"
 
-    def test_real_world_example(self):
+    def test_real_world_example(self) -> None:
         """Test parsing of real API response example."""
         data = load_fixture("device_real_example.json")
         status = ThermostatStatus(data)
@@ -1313,7 +1318,7 @@ class TestValidFixtures:
 class TestInvalidFixtures:
     """Test that invalid fixtures are handled correctly."""
 
-    def test_all_invalid_fixtures_exist(self):
+    def test_all_invalid_fixtures_exist(self) -> None:
         """Verify all expected invalid fixtures exist."""
         expected_fixtures = [
             "missing_traits.json",
@@ -1330,7 +1335,7 @@ class TestInvalidFixtures:
             fixture_path = INVALID_DIR / fixture_name
             assert fixture_path.exists(), f"Missing invalid fixture: {fixture_name}"
 
-    def test_missing_traits_fixture(self):
+    def test_missing_traits_fixture(self) -> None:
         """Test device with missing traits."""
         data = load_fixture("missing_traits.json")
 
@@ -1349,13 +1354,13 @@ class TestInvalidFixtures:
 class TestNoNetworkAccess:
     """Verify that tests never access the network."""
 
-    def test_network_is_blocked(self):
+    def test_network_is_blocked(self) -> None:
         """Verify that socket access is blocked."""
         with pytest.raises(RuntimeError, match="Network access detected"):
             socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     @patch('nest_octopus.nest_thermostat.requests.Session.get')
-    def test_requests_are_mocked(self, mock_get):
+    def test_requests_are_mocked(self, mock_get: Any) -> None:
         """Verify that all requests are mocked."""
         fixture_data = load_fixture("device_heat_mode.json")
         mock_response = Mock()
