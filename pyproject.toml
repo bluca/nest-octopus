@@ -16,6 +16,16 @@ test = [
     "pytest-mock >= 3.12.0",
 ]
 
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+nest-octopus = "nest_octopus.heating_optimizer:main"
+
+[tool.setuptools]
+packages = ["nest_octopus"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
