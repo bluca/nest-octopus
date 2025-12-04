@@ -6,6 +6,7 @@ Tests configuration loading, price analysis, scheduling algorithm,
 and thermostat control with mocked REST endpoints and time functions.
 """
 
+import asyncio
 import json
 import os
 import signal
@@ -28,8 +29,6 @@ from nest_octopus.heating_optimizer import (
     classify_price,
     execute_heating_action,
     find_default_config,
-    handle_reload_signal,
-    handle_shutdown_signal,
     load_config,
     run_daily_cycle,
     run_dry_run,
@@ -424,16 +423,18 @@ class TestThermostatControl:
 class TestDailyCycle:
     """Test the daily optimization cycle."""
 
-    @patch('nest_octopus.heating_optimizer.time.sleep')
+    @pytest.mark.asyncio
     @patch('nest_octopus.heating_optimizer.NestThermostatClient')
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
-    def test_run_daily_cycle_complete(self, mock_octopus_class: Any,
-                                     mock_nest_class: Any, mock_sleep: Any) -> None:
+    async def test_run_daily_cycle_complete(self, mock_octopus_class: Any,
+                                     mock_nest_class: Any) -> None:
         """Test complete daily cycle execution."""
         from nest_octopus.nest_thermostat import ThermostatStatus
 
         # Mock Octopus client
         mock_octopus = Mock()
+        mock_octopus.__enter__ = Mock(return_value=mock_octopus)
+        mock_octopus.__exit__ = Mock(return_value=False)
         mock_octopus_class.return_value = mock_octopus
 
         daily_prices = load_price_fixture("typical_day_prices.json")
@@ -443,6 +444,7 @@ class TestDailyCycle:
 
         # Mock Nest client
         mock_nest = Mock()
+        mock_nest.device_id = "enterprises/proj/devices/thermostat-123"
         mock_nest_class.return_value = mock_nest
 
         mock_device = Mock()
@@ -474,8 +476,8 @@ class TestDailyCycle:
             project_id="proj"
         )
 
-        # Run cycle
-        run_daily_cycle(config)
+        # Run cycle with nest client
+        handles = await run_daily_cycle(config, mock_nest)
 
         # Verify Octopus API calls
         assert mock_octopus.get_unit_rates.call_count == 2
@@ -495,29 +497,30 @@ class TestDailyCycle:
             assert isinstance(kwargs['period_from'], str), "period_from should be a string"
             assert isinstance(kwargs['period_to'], str), "period_to should be a string"
 
-        # Verify Nest client was initialized (device auto-selected during init)
-        mock_nest_class.assert_called_once()
-        # Verify heating actions were executed
-        assert mock_nest.set_eco_mode.called or mock_nest.set_heat.called
+        # Verify handles are returned (may be empty if all actions are in the past)
+        assert isinstance(handles, list)
 
-        # Note: sleep may not be called if all actions are in the past
-        # (which happens with static fixture data)
+        # Cancel all scheduled actions
+        for handle in handles:
+            handle.cancel()
 
-        # Verify clients were closed
-        mock_octopus.close.assert_called_once()
-        mock_nest.close.assert_called_once()
+        # Nest client should not be closed by run_daily_cycle
+        assert not mock_nest.close.called
 
-    @patch('nest_octopus.heating_optimizer.time.sleep')
+    @pytest.mark.asyncio
     @patch('nest_octopus.heating_optimizer.NestThermostatClient')
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
-    def test_run_daily_cycle_no_prices(self, mock_octopus_class: Any,
-                                       mock_nest_class: Any, mock_sleep: Any) -> None:
+    async def test_run_daily_cycle_no_prices(self, mock_octopus_class: Any,
+                                       mock_nest_class: Any) -> None:
         """Test handling when no prices are available."""
         mock_octopus = Mock()
+        mock_octopus.__enter__ = Mock(return_value=mock_octopus)
+        mock_octopus.__exit__ = Mock(return_value=False)
         mock_octopus_class.return_value = mock_octopus
         mock_octopus.get_unit_rates.return_value = []  # No prices
 
         mock_nest = Mock()
+        mock_nest.device_id = "test-device-id"
         mock_nest_class.return_value = mock_nest
         # Mock thermostat list even though we won't use it
         mock_device = Mock()
@@ -533,15 +536,17 @@ class TestDailyCycle:
             project_id="proj"
         )
 
-        run_daily_cycle(config)
+        handles = await run_daily_cycle(config, mock_nest)
+
+        # Should return empty handles
+        assert handles == []
 
         # Should not attempt to control thermostat
         assert not mock_nest.set_mode.called
         assert not mock_nest.set_heat.called
 
-        # Should still close clients
-        mock_octopus.close.assert_called_once()
-        mock_nest.close.assert_called_once()
+        # Nest client should not be closed by run_daily_cycle
+        assert not mock_nest.close.called
 
 
 class TestSchedulingLogic:
@@ -716,8 +721,7 @@ class TestSchedulingLogic:
 class TestIntegration:
     """Integration tests with realistic scenarios."""
 
-    @patch('nest_octopus.heating_optimizer.time.sleep')
-    def test_full_day_schedule_execution(self, mock_sleep: Any) -> None:
+    def test_full_day_schedule_execution(self) -> None:
         """Test full 24-hour schedule with realistic price data."""
         # Load realistic price data
         daily_prices = load_price_fixture("typical_day_prices.json")
@@ -757,128 +761,154 @@ class TestIntegration:
 class TestSignalHandling:
     """Test signal handling for graceful shutdown and config reload."""
 
-    def test_shutdown_signal_handler(self) -> None:
-        """Test SIGTERM sets shutdown flag."""
-        import nest_octopus.heating_optimizer as ho
+    # Note: Signal handler tests removed as signals are now handled via asyncio.Event
+    # The signal handlers are internal to wait_for_signal() and tested via integration tests
 
-        # Reset flags
-        ho.shutdown_requested = False
-
-        # Call signal handler
-        handle_shutdown_signal(signal.SIGTERM, None)
-
-        # Verify flag is set
-        assert ho.shutdown_requested is True
-
-    def test_reload_signal_handler(self) -> None:
-        """Test SIGHUP sets reload flag."""
-        import nest_octopus.heating_optimizer as ho
-
-        # Reset flags
-        ho.reload_config_requested = False
-
-        # Call signal handler
-        handle_reload_signal(signal.SIGHUP, None)
-
-        # Verify flag is set
-        assert ho.reload_config_requested is True
-
-    @patch('nest_octopus.heating_optimizer.time.sleep')
+    @pytest.mark.asyncio
+    @patch('nest_octopus.heating_optimizer.NestThermostatClient')
     @patch('nest_octopus.heating_optimizer.run_daily_cycle')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py'])
-    def test_main_handles_shutdown_signal(self, mock_load_config: Any,
-                                         mock_run_cycle: Any, mock_sleep: Any) -> None:
+    async def test_main_handles_shutdown_signal(self, mock_load_config: Any,
+                                         mock_run_cycle: Any, mock_nest_class: Any) -> None:
         """Test main loop exits gracefully on shutdown signal."""
-        import nest_octopus.heating_optimizer as ho
-        from nest_octopus.heating_optimizer import main
-
-        # Reset flags
-        ho.shutdown_requested = False
-        ho.reload_config_requested = False
+        from nest_octopus.heating_optimizer import async_main
 
         # Setup config mock
         mock_config = Mock()
         mock_load_config.return_value = mock_config
 
-        # Simulate shutdown signal after first sleep
-        def trigger_shutdown(*args: Any, **kwargs: Any) -> None:
-            ho.shutdown_requested = True
+        # Setup nest client mock
+        mock_nest = Mock()
+        mock_nest.device_id = "test-device-id"
+        mock_nest_class.return_value = mock_nest
 
-        mock_sleep.side_effect = trigger_shutdown
+        # Make run_daily_cycle async and return empty handles
+        async def mock_daily_cycle(*args: Any, **kwargs: Any) -> List[Any]:
+            return []
+        mock_run_cycle.side_effect = mock_daily_cycle
 
-        # Run main (should exit after shutdown signal)
-        result = main()
+        # Simulate shutdown signal after first wait
+        call_count = [0]
+        async def mock_wait(tasks: Any, **kwargs: Any) -> Any:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First wait: return timeout (empty done set)
+                return (set(), set(tasks))
+            # Subsequent waits should not occur as shutdown will happen
+            return (set(), set(tasks))
+
+        with patch('nest_octopus.heating_optimizer.asyncio.wait', side_effect=mock_wait):
+            # Patch the signal handler setup to capture events and trigger shutdown
+            def mock_signal_setup(shutdown_event: asyncio.Event, reload_event: asyncio.Event) -> None:
+                # Set shutdown immediately to exit loop after first cycle
+                shutdown_event.set()
+
+            with patch('nest_octopus.heating_optimizer.setup_signal_handlers', side_effect=mock_signal_setup):
+                # Run main (should exit after shutdown signal)
+                result = await async_main()
 
         # Verify graceful shutdown
         assert result == 0
-        assert ho.shutdown_requested is True
 
-    @patch('nest_octopus.heating_optimizer.time.sleep')
+    @pytest.mark.asyncio
+    @patch('nest_octopus.heating_optimizer.NestThermostatClient')
     @patch('nest_octopus.heating_optimizer.run_daily_cycle')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py'])
-    def test_main_reloads_config_on_sighup(self, mock_load_config: Any,
-                                          mock_run_cycle: Any, mock_sleep: Any) -> None:
+    async def test_main_reloads_config_on_sighup(self, mock_load_config: Any,
+                                          mock_run_cycle: Any, mock_nest_class: Any) -> None:
         """Test main loop reloads configuration on SIGHUP."""
-        import nest_octopus.heating_optimizer as ho
-        from nest_octopus.heating_optimizer import main
-
-        # Reset flags
-        ho.shutdown_requested = False
-        ho.reload_config_requested = False
+        from nest_octopus.heating_optimizer import async_main
 
         # Setup config mocks - two different configs
         mock_config1 = Mock(tariff_code="config1")
         mock_config2 = Mock(tariff_code="config2")
         mock_load_config.side_effect = [mock_config1, mock_config2]
 
-        # Simulate reload signal, then shutdown
-        call_count = [0]
-        def trigger_reload_then_shutdown(*args: Any, **kwargs: Any) -> None:
-            call_count[0] += 1
-            if call_count[0] == 1:
-                # First sleep: trigger reload
-                ho.reload_config_requested = True
-            elif call_count[0] == 2:
-                # Second sleep after reload: trigger shutdown
-                ho.shutdown_requested = True
+        # Setup nest client mock - need to track multiple instances
+        mock_nest1 = Mock()
+        mock_nest1.device_id = "test-device-id-1"
+        mock_nest2 = Mock()
+        mock_nest2.device_id = "test-device-id-2"
+        mock_nest_class.side_effect = [mock_nest1, mock_nest2]
 
-        mock_sleep.side_effect = trigger_reload_then_shutdown
+        # Make run_daily_cycle async and return empty handles
+        async def mock_daily_cycle(*args: Any, **kwargs: Any) -> List[Any]:
+            return []
+        mock_run_cycle.side_effect = mock_daily_cycle
 
-        # Run main
-        result = main()
+        # Track how many times we've been called
+        wait_count = [0]
+        reload_event_ref: List[Any] = [None]
+        shutdown_event_ref: List[Any] = [None]
+
+        async def mock_wait(tasks: Any, **kwargs: Any) -> Any:
+            wait_count[0] += 1
+            if wait_count[0] == 1:
+                # First wait: trigger reload
+                if reload_event_ref[0]:
+                    reload_event_ref[0].set()
+                # Return empty done, all tasks pending (timeout)
+                return (set(), set(tasks))
+            elif wait_count[0] == 2:
+                # After reload, trigger shutdown
+                if shutdown_event_ref[0]:
+                    shutdown_event_ref[0].set()
+                # Return empty done, all tasks pending (timeout)
+                return (set(), set(tasks))
+            # Default: return empty done, all tasks pending
+            return (set(), set(tasks))
+
+        with patch('nest_octopus.heating_optimizer.asyncio.wait', side_effect=mock_wait):
+            # Capture events for manipulation
+            def mock_signal_setup(shutdown_event: asyncio.Event, reload_event: asyncio.Event) -> None:
+                reload_event_ref[0] = reload_event
+                shutdown_event_ref[0] = shutdown_event
+
+            with patch('nest_octopus.heating_optimizer.setup_signal_handlers', side_effect=mock_signal_setup):
+                # Run main
+                result = await async_main()
 
         # Verify config was reloaded
         assert result == 0
         assert mock_load_config.call_count == 2
-        assert ho.shutdown_requested is True
+        # Verify first nest client was closed and second was created
+        assert mock_nest_class.call_count == 2
+        mock_nest1.close.assert_called_once()
+        mock_nest2.close.assert_called_once()
 
-    @patch('nest_octopus.heating_optimizer.time.sleep')
+    @pytest.mark.asyncio
+    @patch('nest_octopus.heating_optimizer.NestThermostatClient')
     @patch('nest_octopus.heating_optimizer.run_daily_cycle')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py', '--config', '/custom/path/config.ini'])
-    def test_main_uses_custom_config_path(self, mock_load_config: Any,
-                                         mock_run_cycle: Any, mock_sleep: Any) -> None:
+    async def test_main_uses_custom_config_path(self, mock_load_config: Any,
+                                         mock_run_cycle: Any, mock_nest_class: Any) -> None:
         """Test main uses custom config path from --config argument."""
-        import nest_octopus.heating_optimizer as ho
-        from nest_octopus.heating_optimizer import main
-
-        # Reset flags
-        ho.shutdown_requested = False
+        from nest_octopus.heating_optimizer import async_main
 
         # Setup config mock
         mock_config = Mock()
         mock_load_config.return_value = mock_config
 
+        # Setup nest client mock
+        mock_nest = Mock()
+        mock_nest.device_id = "test-device-id"
+        mock_nest_class.return_value = mock_nest
+
+        # Make run_daily_cycle async and return empty handles
+        async def mock_daily_cycle(*args: Any, **kwargs: Any) -> List[Any]:
+            return []
+        mock_run_cycle.side_effect = mock_daily_cycle
+
         # Trigger shutdown immediately
-        def trigger_shutdown(*args: Any, **kwargs: Any) -> None:
-            ho.shutdown_requested = True
+        def mock_signal_setup(shutdown_event: asyncio.Event, reload_event: asyncio.Event) -> None:
+            shutdown_event.set()
 
-        mock_sleep.side_effect = trigger_shutdown
-
-        # Run main
-        result = main()
+        with patch('nest_octopus.heating_optimizer.setup_signal_handlers', side_effect=mock_signal_setup):
+            # Run main
+            result = await async_main()
 
         # Verify custom config path was used
         assert result == 0
@@ -904,8 +934,10 @@ class TestSignalHandling:
         )
         mock_load_config.return_value = mock_config
 
-        # Setup Octopus client mock
+        # Setup Octopus client mock with context manager support
         mock_octopus = Mock()
+        mock_octopus.__enter__ = Mock(return_value=mock_octopus)
+        mock_octopus.__exit__ = Mock(return_value=False)
         mock_octopus_class.return_value = mock_octopus
 
         daily_prices = load_price_fixture("typical_day_prices.json")
@@ -936,9 +968,6 @@ class TestSignalHandling:
         assert "PLANNED SCHEDULE" in captured.out
         assert "Dry run complete" in captured.out
 
-        # Verify Octopus client was closed
-        mock_octopus.close.assert_called_once()
-
 
 class TestDryRun:
     """Test dry-run mode functionality."""
@@ -958,6 +987,8 @@ class TestDryRun:
 
         # Setup Octopus client mock
         mock_octopus = Mock()
+        mock_octopus.__enter__ = Mock(return_value=mock_octopus)
+        mock_octopus.__exit__ = Mock(return_value=False)
         mock_octopus_class.return_value = mock_octopus
 
         daily_prices = load_price_fixture("typical_day_prices.json")
@@ -990,9 +1021,6 @@ class TestDryRun:
         assert "ECO MODE" in captured.out or "HEATING" in captured.out
         assert "Dry run complete" in captured.out
 
-        # Verify client was closed
-        mock_octopus.close.assert_called_once()
-
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
     def test_run_dry_run_no_prices(self, mock_octopus_class: Any, capsys: Any) -> None:
         """Test dry run when no prices available."""
@@ -1007,6 +1035,8 @@ class TestDryRun:
 
         # Setup Octopus client to return empty prices
         mock_octopus = Mock()
+        mock_octopus.__enter__ = Mock(return_value=mock_octopus)
+        mock_octopus.__exit__ = Mock(return_value=False)
         mock_octopus_class.return_value = mock_octopus
         mock_octopus.get_unit_rates.return_value = []
 
@@ -1035,6 +1065,8 @@ class TestDryRun:
 
         # Setup Octopus client to raise exception
         mock_octopus = Mock()
+        mock_octopus.__enter__ = Mock(return_value=mock_octopus)
+        mock_octopus.__exit__ = Mock(return_value=False)
         mock_octopus_class.return_value = mock_octopus
         mock_octopus.get_unit_rates.side_effect = Exception("API Error")
 
@@ -1048,9 +1080,6 @@ class TestDryRun:
         captured = capsys.readouterr()
         assert "ERROR" in captured.out
 
-        # Verify client close was attempted
-        mock_octopus.close.assert_called_once()
-
     @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py', '--dry-run', '--tariff-code', 'E-1R-AGILE-TEST-H'])
@@ -1060,6 +1089,8 @@ class TestDryRun:
 
         # Setup Octopus client mock
         mock_octopus = Mock()
+        mock_octopus.__enter__ = Mock(return_value=mock_octopus)
+        mock_octopus.__exit__ = Mock(return_value=False)
         mock_octopus_class.return_value = mock_octopus
 
         daily_prices = load_price_fixture("typical_day_prices.json")
@@ -1110,6 +1141,8 @@ class TestDryRun:
 
         # Setup Octopus client mock
         mock_octopus = Mock()
+        mock_octopus.__enter__ = Mock(return_value=mock_octopus)
+        mock_octopus.__exit__ = Mock(return_value=False)
         mock_octopus_class.return_value = mock_octopus
 
         daily_prices = load_price_fixture("typical_day_prices.json")
@@ -1144,30 +1177,36 @@ class TestDryRun:
         assert "E-1R-OVERRIDE-H" in captured.out
         assert "DRY RUN MODE" in captured.out
 
-    @patch('nest_octopus.heating_optimizer.time.sleep')
+    @pytest.mark.asyncio
+    @patch('nest_octopus.heating_optimizer.NestThermostatClient')
     @patch('nest_octopus.heating_optimizer.run_daily_cycle')
     @patch('nest_octopus.heating_optimizer.load_config')
     @patch('sys.argv', ['heating_optimizer.py', '--config', '/test/config.ini', '--tariff-code', 'E-1R-OVERRIDE-H'])
-    def test_tariff_code_overrides_in_daemon_mode(self, mock_load_config: Any, mock_run_cycle: Any, mock_sleep: Any) -> None:
+    async def test_tariff_code_overrides_in_daemon_mode(self, mock_load_config: Any, mock_run_cycle: Any, mock_nest_class: Any) -> None:
         """Test --tariff-code overrides config in normal daemon mode."""
-        import nest_octopus.heating_optimizer as ho
-        from nest_octopus.heating_optimizer import main
-
-        # Reset flags
-        ho.shutdown_requested = False
+        from nest_octopus.heating_optimizer import async_main
 
         # Setup config with different tariff code
         mock_config = Mock(tariff_code="E-1R-AGILE-ORIGINAL-H")
         mock_load_config.return_value = mock_config
 
+        # Setup nest client mock
+        mock_nest = Mock()
+        mock_nest.device_id = "test-device-id"
+        mock_nest_class.return_value = mock_nest
+
+        # Make run_daily_cycle async and return empty handles
+        async def mock_daily_cycle(*args: Any, **kwargs: Any) -> List[Any]:
+            return []
+        mock_run_cycle.side_effect = mock_daily_cycle
+
         # Trigger shutdown immediately
-        def trigger_shutdown(*args: Any, **kwargs: Any) -> None:
-            ho.shutdown_requested = True
+        def mock_signal_setup(shutdown_event: asyncio.Event, reload_event: asyncio.Event) -> None:
+            shutdown_event.set()
 
-        mock_sleep.side_effect = trigger_shutdown
-
-        # Run main
-        result = main()
+        with patch('nest_octopus.heating_optimizer.setup_signal_handlers', side_effect=mock_signal_setup):
+            # Run main
+            result = await async_main()
 
         # Verify success
         assert result == 0

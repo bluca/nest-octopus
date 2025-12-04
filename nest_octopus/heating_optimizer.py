@@ -16,6 +16,7 @@ The daemon:
 """
 
 import argparse
+import asyncio
 import configparser
 import errno
 import logging
@@ -32,15 +33,11 @@ from nest_octopus.nest_thermostat import EcoMode, NestThermostatClient, Thermost
 from nest_octopus.octopus import OctopusEnergyClient, PricePoint
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(name)s - %(levelname)s - %(message)s',
     force=True,
 )
 logger = logging.getLogger(__name__)
-
-# Global flags for signal handling
-shutdown_requested = False
-reload_config_requested = False
 
 
 class ConfigurationError(Exception):
@@ -526,37 +523,33 @@ def execute_heating_action(
         raise
 
 
-def run_daily_cycle(config: Config) -> None:
+async def run_daily_cycle(config: Config, nest: NestThermostatClient) -> list[asyncio.TimerHandle]:
     """
     Run one daily optimization cycle.
 
     1. Fetch next 24 hours of prices
     2. Fetch previous week of prices for comparison
     3. Calculate optimal heating schedule
-    4. Execute scheduled actions with sleep intervals
+    4. Schedule all actions using call_later()
 
     Args:
         config: Application configuration
+        nest: Nest thermostat client (device already selected)
+
+    Returns:
+        List of TimerHandle objects for scheduled actions (can be canceled)
     """
     logger.debug("=" * 60)
     logger.debug("Starting daily heating optimization cycle")
     logger.debug("=" * 60)
 
+    handles: list[asyncio.TimerHandle] = []
 
     # Initialize Octopus client
     with OctopusEnergyClient(
         api_key=config.api_key,
         account_number=config.account_number,
         mpan=config.mpan
-    )
-    nest = NestThermostatClient(
-        project_id=config.project_id,
-        refresh_token=config.refresh_token,
-        client_id=config.client_id,
-        client_secret=config.client_secret,
-        display_name=config.thermostat_name  # Used for device selection
-    )
-
     ) as octopus:
         # Device auto-selected during client initialization
         logger.debug(f"Using thermostat: {nest.device_id}")
@@ -574,7 +567,7 @@ def run_daily_cycle(config: Config) -> None:
 
         if not daily_prices:
             logger.error("No prices available for next 24 hours")
-            return
+            return handles
 
         logger.debug(f"Fetched {len(daily_prices)} price points for next 24 hours")
 
@@ -600,40 +593,54 @@ def run_daily_cycle(config: Config) -> None:
 
         if not actions:
             logger.warning("No heating actions scheduled")
-            return
+            return handles
 
-        # Execute actions with sleep intervals
-        for i, action in enumerate(actions):
-            # Calculate sleep time until this action
-            now = datetime.now(timezone.utc) if action.timestamp.tzinfo else datetime.now()
-            sleep_seconds = (action.timestamp - now).total_seconds()
+        # Schedule all actions using call_later
+        loop = asyncio.get_running_loop()
+        current_time = datetime.now(timezone.utc) if actions[0].timestamp.tzinfo else datetime.now()
 
-            if sleep_seconds > 0:
-                logger.debug(f"Sleeping for {sleep_seconds/60:.1f} minutes until next action")
-                time.sleep(sleep_seconds)
+        logger.info(f"Scheduling {len(actions)} heating actions")
+        for action in actions:
+            # Calculate delay until this action
+            delay_seconds = (action.timestamp - current_time).total_seconds()
 
-            # Execute the action
-            execute_heating_action(action, nest)
+            if delay_seconds < 0:
+                logger.warning(f"Skipping past action: {action}")
+                continue
 
-            # Check if this is the last action
-            if i == len(actions) - 1:
-                logger.debug("All scheduled actions completed")
+            logger.debug(f"Scheduling action in {delay_seconds/60:.1f} minutes: {action}")
+
+            # Schedule the action
+            handle = loop.call_later(
+                delay_seconds,
+                execute_heating_action,
+                action,
+                nest
+            )
+            handles.append(handle)
+
+        logger.info(f"Scheduled {len(handles)} heating actions")
+        return handles
 
 
+def setup_signal_handlers(shutdown_event: asyncio.Event, reload_event: asyncio.Event) -> None:
+    """Setup signal handlers that set corresponding events."""
+    loop = asyncio.get_running_loop()
 
-def handle_shutdown_signal(signum: int, frame: Any) -> None:
-    """Handle SIGINT/SIGTERM for graceful shutdown."""
-    global shutdown_requested
-    signal_name = signal.Signals(signum).name
-    logger.debug(f"Received {signal_name}, initiating graceful shutdown")
-    shutdown_requested = True
+    def handle_shutdown() -> None:
+        """Handle SIGINT/SIGTERM for graceful shutdown."""
+        logger.debug("Received shutdown signal, initiating graceful shutdown")
+        shutdown_event.set()
 
+    def handle_reload() -> None:
+        """Handle SIGHUP to reload configuration."""
+        logger.debug("Received SIGHUP, will reload configuration")
+        reload_event.set()
 
-def handle_reload_signal(signum: int, frame: Any) -> None:
-    """Handle SIGHUP to reload configuration."""
-    global reload_config_requested
-    logger.debug("Received SIGHUP, will reload configuration")
-    reload_config_requested = True
+    # Register signal handlers
+    loop.add_signal_handler(signal.SIGINT, handle_shutdown)
+    loop.add_signal_handler(signal.SIGTERM, handle_shutdown)
+    loop.add_signal_handler(signal.SIGHUP, handle_reload)
 
 
 def print_price_graph(prices: List[PricePoint]) -> None:
@@ -739,136 +746,135 @@ def run_dry_run(config: Config) -> int:
     print()
 
     # Initialize Octopus client
-    octopus = OctopusEnergyClient(
+    with OctopusEnergyClient(
         api_key=config.api_key,
         account_number=config.account_number,
         mpan=config.mpan
-    )
+    ) as octopus:
+        try:
+            # Fetch prices for next 24 hours
+            now = datetime.now()
+            tomorrow = now + timedelta(days=1)
+            print(f"📊 Fetching prices from {now.strftime('%Y-%m-%d %H:%M')} to {tomorrow.strftime('%Y-%m-%d %H:%M')}...")
 
-    try:
-        # Fetch prices for next 24 hours
-        now = datetime.now()
-        tomorrow = now + timedelta(days=1)
-        print(f"📊 Fetching prices from {now.strftime('%Y-%m-%d %H:%M')} to {tomorrow.strftime('%Y-%m-%d %H:%M')}...")
+            daily_prices = octopus.get_unit_rates(
+                tariff_code=config.tariff_code,
+                period_from=now.isoformat(),
+                period_to=tomorrow.isoformat()
+            )
 
-        daily_prices = octopus.get_unit_rates(
-            tariff_code=config.tariff_code,
-            period_from=now.isoformat(),
-            period_to=tomorrow.isoformat()
-        )
+            if not daily_prices:
+                print("\n❌ ERROR: No prices available for next 24 hours")
+                return 1
 
-        if not daily_prices:
-            print("\n❌ ERROR: No prices available for next 24 hours")
-            return 1
+            print(f"   ✓ Retrieved {len(daily_prices)} price points for next 24 hours")
 
-        print(f"   ✓ Retrieved {len(daily_prices)} price points for next 24 hours")
+            # Fetch previous week of prices for comparison
+            week_ago = now - timedelta(days=7)
+            print(f"\n📊 Fetching historical prices from {week_ago.strftime('%Y-%m-%d')} for comparison...")
 
-        # Fetch previous week of prices for comparison
-        week_ago = now - timedelta(days=7)
-        print(f"\n📊 Fetching historical prices from {week_ago.strftime('%Y-%m-%d')} for comparison...")
+            weekly_prices = octopus.get_unit_rates(
+                tariff_code=config.tariff_code,
+                period_from=week_ago.isoformat(),
+                period_to=now.isoformat()
+            )
 
-        weekly_prices = octopus.get_unit_rates(
-            tariff_code=config.tariff_code,
-            period_from=week_ago.isoformat(),
-            period_to=now.isoformat()
-        )
+            print(f"   ✓ Retrieved {len(weekly_prices)} price points for previous week")
 
-        print(f"   ✓ Retrieved {len(weekly_prices)} price points for previous week")
+            # Calculate price statistics
+            daily_avg, weekly_avg, daily_min, daily_max = calculate_price_statistics(
+                daily_prices, weekly_prices
+            )
 
-        # Calculate price statistics
-        daily_avg, weekly_avg, daily_min, daily_max = calculate_price_statistics(
-            daily_prices, weekly_prices
-        )
+            print("\n" + "=" * 70)
+            print("  PRICE ANALYSIS")
+            print("=" * 70)
+            print(f"\n  Tariff Code:     {config.tariff_code}")
+            print(f"  Daily Average:   {daily_avg:.2f}p/kWh")
+            print(f"  Weekly Average:  {weekly_avg:.2f}p/kWh")
+            print(f"  Daily Minimum:   {daily_min:.2f}p/kWh")
+            print(f"  Daily Maximum:   {daily_max:.2f}p/kWh")
+            print(f"  Low Temp:        {config.low_price_temp}°C")
+            print(f"  Average Temp:    {config.average_price_temp}°C")
 
-        print("\n" + "=" * 70)
-        print("  PRICE ANALYSIS")
-        print("=" * 70)
-        print(f"\n  Tariff Code:     {config.tariff_code}")
-        print(f"  Daily Average:   {daily_avg:.2f}p/kWh")
-        print(f"  Weekly Average:  {weekly_avg:.2f}p/kWh")
-        print(f"  Daily Minimum:   {daily_min:.2f}p/kWh")
-        print(f"  Daily Maximum:   {daily_max:.2f}p/kWh")
-        print(f"  Low Temp:        {config.low_price_temp}°C")
-        print(f"  Average Temp:    {config.average_price_temp}°C")
+            # Print price graph
+            print_price_graph(daily_prices)
 
-        # Print price graph
-        print_price_graph(daily_prices)
+            # Calculate heating schedule
+            actions = calculate_heating_schedule(
+                daily_prices,
+                weekly_prices,
+                config,
+                now
+            )
 
-        # Calculate heating schedule
-        actions = calculate_heating_schedule(
-            daily_prices,
-            weekly_prices,
-            config,
-            now
-        )
+            if not actions:
+                print("\n⚠️  No heating actions scheduled")
+                return 0
 
-        if not actions:
-            print("\n⚠️  No heating actions scheduled")
-            return 0
-
-        print("\n" + "=" * 70)
-        print(f"  PLANNED SCHEDULE ({len(actions)} actions)")
-        print("=" * 70)
-        print()
-
-        # Helper to find price at a given timestamp
-        def find_price_at(timestamp: datetime, prices: List[PricePoint]) -> Optional[PricePoint]:
-            """Find the price point active at a given timestamp."""
-            for price in prices:
-                if isinstance(price.valid_from, str):
-                    valid_from = datetime.fromisoformat(price.valid_from.replace('Z', '+00:00'))
-                    valid_to = datetime.fromisoformat(price.valid_to.replace('Z', '+00:00'))
-                else:
-                    valid_from = price.valid_from
-                    valid_to = price.valid_to
-
-                if valid_from <= timestamp < valid_to:
-                    return price
-            return None
-
-        # Pretty print the schedule
-        for i, action in enumerate(actions, 1):
-            time_str = action.timestamp.strftime("%a %H:%M")
-
-            # Find the price at this action time
-            price = find_price_at(action.timestamp, daily_prices)
-            price_str = f" @ {price.value_inc_vat:.2f}p/kWh" if price else ""
-
-            if action.eco_mode:
-                mode_str = "🟦 ECO MODE"
-                temp_str = ""
-            else:
-                mode_str = "🔥 HEATING"
-                temp_str = f" → {action.temperature}°C"
-
-            print(f"  {i:2d}. {time_str}  {mode_str}{temp_str}{price_str}")
-            print(f"      └─ {action.reason}")
+            print("\n" + "=" * 70)
+            print(f"  PLANNED SCHEDULE ({len(actions)} actions)")
+            print("=" * 70)
             print()
 
-        print("=" * 70)
-        print(f"\n✓ Dry run complete. {len(actions)} actions would be executed.")
-        print("  (Run without --dry-run to execute the schedule)\n")
+            # Helper to find price at a given timestamp
+            def find_price_at(timestamp: datetime, prices: List[PricePoint]) -> Optional[PricePoint]:
+                """Find the price point active at a given timestamp."""
+                for price in prices:
+                    if isinstance(price.valid_from, str):
+                        valid_from = datetime.fromisoformat(price.valid_from.replace('Z', '+00:00'))
+                        valid_to = datetime.fromisoformat(price.valid_to.replace('Z', '+00:00'))
+                    else:
+                        valid_from = price.valid_from
+                        valid_to = price.valid_to
 
-    except Exception as e:
-        print(f"\n❌ ERROR: {e}")
-        logger.error(f"Dry run failed: {e}", exc_info=True)
-        return 1
-    finally:
-        octopus.close()
+                    if valid_from <= timestamp < valid_to:
+                        return price
+                return None
+
+            # Pretty print the schedule
+            for i, action in enumerate(actions, 1):
+                time_str = action.timestamp.strftime("%a %H:%M")
+
+                # Find the price at this action time
+                price = find_price_at(action.timestamp, daily_prices)
+                price_str = f" @ {price.value_inc_vat:.2f}p/kWh" if price else ""
+
+                if action.eco_mode:
+                    mode_str = "🟦 ECO MODE"
+                    temp_str = ""
+                else:
+                    mode_str = "🔥 HEATING"
+                    temp_str = f" → {action.temperature}°C"
+
+                print(f"  {i:2d}. {time_str}  {mode_str}{temp_str}{price_str}")
+                print(f"      └─ {action.reason}")
+                print()
+
+            print("=" * 70)
+            print(f"\n✓ Dry run complete. {len(actions)} actions would be executed.")
+            print("  (Run without --dry-run to execute the schedule)\n")
+
+        except Exception as e:
+            print(f"\n❌ ERROR: {e}")
+            logger.error(f"Dry run failed: {e}", exc_info=True)
+            return 1
 
     return 0
 
 
-def main() -> int:
+async def async_main() -> int:
     """
-    Main daemon loop.
+    Main daemon loop (async).
 
     Runs continuously, executing optimization cycle at 8pm each day.
     Handles signals:
     - SIGINT/SIGTERM: Graceful shutdown
     - SIGHUP: Reload configuration
     """
-    global shutdown_requested, reload_config_requested
+    # Create events for signal handling
+    shutdown_event = asyncio.Event()
+    reload_event = asyncio.Event()
 
     # Parse command line arguments
     parser = argparse.ArgumentParser(
@@ -907,10 +913,8 @@ def main() -> int:
 
     logger.debug("Heating Optimization Daemon starting")
 
-    # Register signal handlers
-    signal.signal(signal.SIGINT, handle_shutdown_signal)
-    signal.signal(signal.SIGTERM, handle_shutdown_signal)
-    signal.signal(signal.SIGHUP, handle_reload_signal)
+    # Setup signal handlers
+    setup_signal_handlers(shutdown_event, reload_event)
 
     # Load configuration (skip if dry-run with tariff-code)
     config_path = args.config
@@ -953,64 +957,187 @@ def main() -> int:
 
     notify_ready()
 
-    while not shutdown_requested:
+    # Initialize Nest client once at startup
+    logger.debug("Initializing Nest thermostat client")
+    nest_client = NestThermostatClient(
+        project_id=config.project_id,
+        refresh_token=config.refresh_token,
+        client_id=config.client_id,
+        client_secret=config.client_secret,
+        display_name=config.thermostat_name
+    )
+    logger.debug(f"Nest client initialized, using device: {nest_client.device_id}")
+
+    # Track scheduled actions and next cycle handle
+    scheduled_handles: list[asyncio.TimerHandle] = []
+    next_cycle_handle: Optional[asyncio.TimerHandle] = None
+    loop = asyncio.get_running_loop()
+
+    def schedule_next_cycle() -> None:
+        """Schedule the next daily cycle at 8pm."""
+        nonlocal next_cycle_handle
+
+        # Calculate next 8pm
+        now = datetime.now()
+        next_run = now.replace(hour=20, minute=0, second=0, microsecond=0)
+
+        # If it's already past 8pm, schedule for tomorrow
+        if now.hour >= 20:
+            next_run += timedelta(days=1)
+
+        delay_seconds = (next_run - datetime.now()).total_seconds()
+        logger.debug(f"Next cycle scheduled for {next_run.isoformat()} (in {delay_seconds/3600:.1f} hours)")
+
+        next_cycle_handle = loop.call_later(delay_seconds, run_cycle_callback)
+
+    def run_cycle_callback() -> None:
+        """Callback to run the daily cycle and schedule the next one."""
+        nonlocal scheduled_handles, next_cycle_handle
+
+        # Ensure config is not None
+        assert config is not None, "Config must be loaded before running cycle"
+
         try:
-            # Check for config reload request
-            if reload_config_requested:
+            # Cancel any previously scheduled actions before starting new cycle
+            if scheduled_handles:
+                logger.debug(f"Canceling {len(scheduled_handles)} previous scheduled actions")
+                for handle in scheduled_handles:
+                    handle.cancel()
+                scheduled_handles.clear()
+
+            # Run the daily cycle and get scheduled actions
+            # We need to run this in the event loop since it's async
+            task = asyncio.create_task(run_daily_cycle(config, nest_client))
+
+            def on_cycle_complete(future: asyncio.Future[list[asyncio.TimerHandle]]) -> None:
+                nonlocal scheduled_handles
+                try:
+                    handles = future.result()
+                    scheduled_handles = handles
+                    # Schedule the next cycle
+                    schedule_next_cycle()
+                except Exception as e:
+                    logger.error(f"Error in daily cycle: {e}", exc_info=True)
+                    # Retry in 1 hour
+                    logger.debug("Scheduling retry in 1 hour")
+                    next_cycle_handle = loop.call_later(3600, run_cycle_callback)
+
+            task.add_done_callback(on_cycle_complete)
+
+        except Exception as e:
+            logger.error(f"Error starting daily cycle: {e}", exc_info=True)
+            # Retry in 1 hour
+            logger.debug("Scheduling retry in 1 hour")
+            next_cycle_handle = loop.call_later(3600, run_cycle_callback)
+
+    # Run the first cycle immediately on startup
+    logger.debug("Running initial daily cycle")
+    run_cycle_callback()
+
+    # Main event loop - wait for signals using asyncio
+    try:
+        while True:
+            # Wait for either shutdown or reload signal
+            shutdown_task = asyncio.create_task(shutdown_event.wait())
+            reload_task = asyncio.create_task(reload_event.wait())
+
+            done, pending = await asyncio.wait(
+                [shutdown_task, reload_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            # Handle shutdown
+            if shutdown_event.is_set():
+                break
+
+            # Handle config reload
+            if reload_event.is_set():
+                reload_event.clear()
+
+                # Cancel any pending scheduled actions
+                if scheduled_handles:
+                    logger.debug(f"Canceling {len(scheduled_handles)} scheduled actions due to reload")
+                    for handle in scheduled_handles:
+                        handle.cancel()
+                    scheduled_handles.clear()
+
+                # Cancel the next cycle schedule
+                if next_cycle_handle:
+                    next_cycle_handle.cancel()
+
                 notify_reloading()
                 logger.debug("Reloading configuration")
                 try:
                     config = load_config(config_path)
                     logger.debug("Configuration reloaded successfully")
+
+                    # Close the old Nest client and create a new one with updated config
+                    logger.debug("Closing old Nest client")
+                    nest_client.close()
+
+                    logger.debug("Reinitializing Nest thermostat client with new configuration")
+                    nest_client = NestThermostatClient(
+                        project_id=config.project_id,
+                        refresh_token=config.refresh_token,
+                        client_id=config.client_id,
+                        client_secret=config.client_secret,
+                        display_name=config.thermostat_name
+                    )
+
+                    # Override tariff code if specified
+                    if args.tariff_code:
+                        logger.debug(f"Overriding tariff code with: {args.tariff_code}")
+                        config.tariff_code = args.tariff_code
+
+                    # Override threshold values with command line args (which have defaults)
+                    config.low_price_threshold = args.low_price_threshold
+                    config.high_price_threshold = args.high_price_threshold
+
+                    logger.debug(f"Nest client reinitialized, using device: {nest_client.device_id}")
                 except ConfigurationError as e:
                     logger.error(f"Failed to reload configuration: {e}")
                     logger.debug("Continuing with previous configuration")
-                reload_config_requested = False
+
                 notify_ready()
 
-            # Calculate next 8pm
-            now = datetime.now()
-            next_run = now.replace(hour=20, minute=0, second=0, microsecond=0)
+                # Restart the cycle with new config
+                run_cycle_callback()
+    except Exception as e:
+        logger.error(f"Error in main loop: {e}", exc_info=True)
 
-            # If it's already past 8pm, schedule for tomorrow
-            if now.hour >= 20:
-                next_run += timedelta(days=1)
+    # Cancel the next cycle schedule
+    if next_cycle_handle:
+        next_cycle_handle.cancel()
 
-            # Sleep until 8pm, checking for signals periodically
-            sleep_seconds = (next_run - datetime.now()).total_seconds()
-            logger.debug(f"Next cycle at {next_run.isoformat()} (in {sleep_seconds/3600:.1f} hours)")
+    # Cancel any remaining scheduled actions
+    if scheduled_handles:
+        logger.debug(f"Canceling {len(scheduled_handles)} remaining scheduled actions")
+        for handle in scheduled_handles:
+            handle.cancel()
+        scheduled_handles.clear()
 
-            # Sleep in small intervals to check for signals
-            sleep_interval = min(60, sleep_seconds)  # Check every minute or less
-            while sleep_seconds > 0 and not shutdown_requested and not reload_config_requested:
-                time.sleep(min(sleep_interval, sleep_seconds))
-                sleep_seconds = (next_run - datetime.now()).total_seconds()
-
-            # If shutdown was requested during sleep, exit
-            # (Condition already checked in loop, but explicit for clarity)
-            if shutdown_requested:
-                break  # type: ignore[unreachable]
-
-            # If config reload was requested during sleep, continue to reload
-            if reload_config_requested:
-                continue
-
-            # Run the daily cycle
-            run_daily_cycle(config)
-
-        except Exception as e:
-            logger.error(f"Error in daily cycle: {e}", exc_info=True)
-            # Sleep for an hour before retrying
-            logger.debug("Sleeping for 1 hour before retry")
-            sleep_time = 3600
-            while sleep_time > 0 and not shutdown_requested:
-                time.sleep(min(60, sleep_time))
-                sleep_time -= 60
+    # Close the nest client
+    nest_client.close()
 
     notify_stopping()
 
     logger.debug("Daemon shutdown complete")
     return 0
+
+
+def main() -> int:
+    """
+    Synchronous wrapper for async_main.
+    """
+    return asyncio.run(async_main())
 
 
 if __name__ == "__main__":
