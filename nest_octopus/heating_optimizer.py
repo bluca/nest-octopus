@@ -542,8 +542,9 @@ def run_daily_cycle(config: Config) -> None:
     logger.debug("Starting daily heating optimization cycle")
     logger.debug("=" * 60)
 
-    # Initialize clients
-    octopus = OctopusEnergyClient(
+
+    # Initialize Octopus client
+    with OctopusEnergyClient(
         api_key=config.api_key,
         account_number=config.account_number,
         mpan=config.mpan
@@ -556,7 +557,7 @@ def run_daily_cycle(config: Config) -> None:
         display_name=config.thermostat_name  # Used for device selection
     )
 
-    try:
+    ) as octopus:
         # Device auto-selected during client initialization
         logger.debug(f"Using thermostat: {nest.device_id}")
 
@@ -618,9 +619,6 @@ def run_daily_cycle(config: Config) -> None:
             if i == len(actions) - 1:
                 logger.debug("All scheduled actions completed")
 
-    finally:
-        octopus.close()
-        nest.close()
 
 
 def handle_shutdown_signal(signum: int, frame: Any) -> None:
