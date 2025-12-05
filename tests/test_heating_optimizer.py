@@ -398,7 +398,7 @@ class TestThermostatControl:
                 'sdm.devices.traits.Temperature': {'ambientTemperatureCelsius': 20.0},
                 'sdm.devices.traits.Humidity': {'ambientHumidityPercent': 50.0},
                 'sdm.devices.traits.ThermostatMode': {'mode': 'HEAT'},
-                'sdm.devices.traits.ThermostatEco': {'mode': 'OFF'},
+                'sdm.devices.traits.ThermostatEco': {'mode': 'MANUAL_ECO'},
                 'sdm.devices.traits.ThermostatHvac': {'status': 'OFF'},
                 'sdm.devices.traits.ThermostatTemperatureSetpoint': {'heatCelsius': 20.0}
             }

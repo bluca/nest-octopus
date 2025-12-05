@@ -593,14 +593,16 @@ def execute_heating_action(
             return
 
         if action.eco_mode:
-            logger.info(f"Enabling ECO mode: {action.reason}")
-            notify(b"STATUS=Enabling ECO mode")
-            client.set_eco_mode(EcoMode.MANUAL_ECO)
+            if status.eco_mode != EcoMode.MANUAL_ECO.value:
+                logger.info(f"Enabling ECO mode: {action.reason}")
+                notify(b"STATUS=Enabling ECO mode")
+                client.set_eco_mode(EcoMode.MANUAL_ECO)
         else:
             # First disable ECO mode if it's on
-            logger.info(f"Disabling ECO mode")
-            notify(b"STATUS=Disabling ECO mode")
-            client.set_eco_mode(EcoMode.OFF)
+            if status.eco_mode != EcoMode.OFF.value:
+                logger.info(f"Disabling ECO mode")
+                notify(b"STATUS=Disabling ECO mode")
+                client.set_eco_mode(EcoMode.OFF)
 
             # Only set temperature if specified (temperature=None means just turn off ECO)
             if action.temperature is not None:
