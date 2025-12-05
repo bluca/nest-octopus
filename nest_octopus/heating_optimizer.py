@@ -79,6 +79,9 @@ class Config:
     tg_username: Optional[str] = None
     tg_password: Optional[str] = None
     tg_device_name: Optional[str] = None
+    tg_window_hours: int = 2  # Duration of each window
+    tg_num_windows: int = 2  # Number of windows per day
+    tg_min_gap_hours: int = 10  # Minimum gap between windows
 
 
 @dataclass
@@ -256,6 +259,18 @@ def load_config(config_path: Optional[str] = None) -> Config:
         if parser.has_section('tg_supplymaster') and parser.has_option('tg_supplymaster', 'device_name'):
             tg_device_name = parser.get('tg_supplymaster', 'device_name')
 
+        tg_window_hours = 2
+        if parser.has_section('tg_supplymaster') and parser.has_option('tg_supplymaster', 'window_hours'):
+            tg_window_hours = parser.getint('tg_supplymaster', 'window_hours')
+
+        tg_num_windows = 2
+        if parser.has_section('tg_supplymaster') and parser.has_option('tg_supplymaster', 'num_windows'):
+            tg_num_windows = parser.getint('tg_supplymaster', 'num_windows')
+
+        tg_min_gap_hours = 10
+        if parser.has_section('tg_supplymaster') and parser.has_option('tg_supplymaster', 'min_gap_hours'):
+            tg_min_gap_hours = parser.getint('tg_supplymaster', 'min_gap_hours')
+
         config = Config(
             thermostat_name=parser.get('nest', 'thermostat_name'),
             client_id=parser.get('nest', 'client_id'),
@@ -269,6 +284,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
             tg_username=tg_username,
             tg_password=tg_password,
             tg_device_name=tg_device_name,
+            tg_window_hours=tg_window_hours,
+            tg_num_windows=tg_num_windows,
+            tg_min_gap_hours=tg_min_gap_hours,
         )
 
         # Optional heating preferences
@@ -291,6 +309,49 @@ def load_config(config_path: Optional[str] = None) -> Config:
 
     except (configparser.NoSectionError, configparser.NoOptionError) as e:
         raise ConfigurationError(f"Invalid configuration: {e}")
+
+
+def apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
+    """
+    Apply command line argument overrides to configuration.
+
+    Args:
+        config: Configuration object to modify
+        args: Parsed command line arguments
+    """
+    if args.tariff_code:
+        logger.debug(f"Overriding tariff code with: {args.tariff_code}")
+        config.tariff_code = args.tariff_code
+
+    if args.low_price_threshold is not None:
+        config.low_price_threshold = args.low_price_threshold
+
+    if args.high_price_threshold is not None:
+        config.high_price_threshold = args.high_price_threshold
+
+    if args.low_price_temp is not None:
+        config.low_price_temp = args.low_price_temp
+
+    if args.average_price_temp is not None:
+        config.average_price_temp = args.average_price_temp
+
+    if args.tg_username is not None:
+        config.tg_username = args.tg_username
+
+    if args.tg_password is not None:
+        config.tg_password = args.tg_password
+
+    if args.tg_device_name is not None:
+        config.tg_device_name = args.tg_device_name
+
+    if args.tg_window_hours is not None:
+        config.tg_window_hours = args.tg_window_hours
+
+    if args.tg_num_windows is not None:
+        config.tg_num_windows = args.tg_num_windows
+
+    if args.tg_min_gap_hours is not None:
+        config.tg_min_gap_hours = args.tg_min_gap_hours
 
 
 def calculate_price_statistics(
@@ -809,9 +870,9 @@ async def run_daily_cycle(
             try:
                 cheap_windows = find_cheapest_windows(
                     daily_prices,
-                    window_hours=2,
-                    num_windows=2,
-                    min_gap_hours=10
+                    window_hours=config.tg_window_hours,
+                    num_windows=config.tg_num_windows,
+                    min_gap_hours=config.tg_min_gap_hours
                 )
                 if cheap_windows:
                     program_tg_switch(config, cheap_windows)
@@ -1100,9 +1161,9 @@ def run_dry_run(config: Config) -> int:
             try:
                 cheap_windows = find_cheapest_windows(
                     daily_prices,
-                    window_hours=2,
-                    num_windows=2,
-                    min_gap_hours=10
+                    window_hours=config.tg_window_hours,
+                    num_windows=config.tg_num_windows,
+                    min_gap_hours=config.tg_min_gap_hours
                 )
 
                 if cheap_windows:
@@ -1170,14 +1231,62 @@ async def async_main() -> int:
     parser.add_argument(
         '--low-price-threshold',
         type=float,
-        default=0.75,
+        default=None,
         help='Low price threshold multiplier (default: 0.75)'
     )
     parser.add_argument(
         '--high-price-threshold',
         type=float,
-        default=1.33,
+        default=None,
         help='High price threshold multiplier (default: 1.33)'
+    )
+    parser.add_argument(
+        '--low-price-temp',
+        type=float,
+        default=None,
+        help='Temperature for low price periods in °C (default: 20.0)'
+    )
+    parser.add_argument(
+        '--average-price-temp',
+        type=float,
+        default=None,
+        help='Temperature for average price periods in °C (default: 17.0)'
+    )
+    parser.add_argument(
+        '--tg-username',
+        type=str,
+        default=None,
+        help='TG SupplyMaster username (overrides config file)'
+    )
+    parser.add_argument(
+        '--tg-password',
+        type=str,
+        default=None,
+        help='TG SupplyMaster password (overrides credentials file)'
+    )
+    parser.add_argument(
+        '--tg-device-name',
+        type=str,
+        default=None,
+        help='TG SupplyMaster device name (overrides config file)'
+    )
+    parser.add_argument(
+        '--tg-window-hours',
+        type=int,
+        default=None,
+        help='TG window duration in hours (default: 2)'
+    )
+    parser.add_argument(
+        '--tg-num-windows',
+        type=int,
+        default=None,
+        help='TG number of windows per day (default: 2)'
+    )
+    parser.add_argument(
+        '--tg-min-gap-hours',
+        type=int,
+        default=None,
+        help='TG minimum gap between windows in hours (default: 10)'
     )
     args = parser.parse_args()
 
@@ -1195,13 +1304,21 @@ async def async_main() -> int:
         logger.debug("Dry-run mode with --tariff-code, skipping config file")
         config = Config(
             tariff_code=args.tariff_code,
-            low_price_threshold=args.low_price_threshold,
-            high_price_threshold=args.high_price_threshold,
+            low_price_threshold=args.low_price_threshold if args.low_price_threshold is not None else 0.75,
+            high_price_threshold=args.high_price_threshold if args.high_price_threshold is not None else 1.33,
+            low_price_temp=args.low_price_temp if args.low_price_temp is not None else 20.0,
+            average_price_temp=args.average_price_temp if args.average_price_temp is not None else 17.0,
             thermostat_name="",
             client_id="",
             client_secret="",
             refresh_token="",
             project_id="",
+            tg_username=args.tg_username,
+            tg_password=args.tg_password,
+            tg_device_name=args.tg_device_name,
+            tg_window_hours=args.tg_window_hours if args.tg_window_hours is not None else 2,
+            tg_num_windows=args.tg_num_windows if args.tg_num_windows is not None else 2,
+            tg_min_gap_hours=args.tg_min_gap_hours if args.tg_min_gap_hours is not None else 10,
         )
     else:
         # Load full configuration
@@ -1209,14 +1326,8 @@ async def async_main() -> int:
             config = load_config(config_path)
             logger.debug("Configuration loaded successfully")
 
-            # Override tariff code if specified
-            if args.tariff_code:
-                logger.debug(f"Overriding tariff code with: {args.tariff_code}")
-                config.tariff_code = args.tariff_code
-
-            # Override threshold values with command line args (which have defaults)
-            config.low_price_threshold = args.low_price_threshold
-            config.high_price_threshold = args.high_price_threshold
+            # Override with command line arguments if specified
+            apply_cli_overrides(config, args)
         except ConfigurationError as e:
             logger.error(f"Configuration error: {e}")
             return 1
@@ -1349,6 +1460,9 @@ async def async_main() -> int:
                     config = load_config(config_path)
                     logger.debug("Configuration reloaded successfully")
 
+                    # Override with command line arguments if specified
+                    apply_cli_overrides(config, args)
+
                     # Close the old Nest client and create a new one with updated config
                     logger.debug("Closing old Nest client")
                     nest_client.close()
@@ -1361,15 +1475,6 @@ async def async_main() -> int:
                         client_secret=config.client_secret,
                         display_name=config.thermostat_name
                     )
-
-                    # Override tariff code if specified
-                    if args.tariff_code:
-                        logger.debug(f"Overriding tariff code with: {args.tariff_code}")
-                        config.tariff_code = args.tariff_code
-
-                    # Override threshold values with command line args (which have defaults)
-                    config.low_price_threshold = args.low_price_threshold
-                    config.high_price_threshold = args.high_price_threshold
 
                     logger.debug(f"Nest client reinitialized, using device: {nest_client.device_id}")
                 except ConfigurationError as e:
