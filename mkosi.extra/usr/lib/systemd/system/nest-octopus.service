@@ -10,6 +10,7 @@ Restart=on-failure
 ImportCredential=api_key
 ImportCredential=client_secret
 ImportCredential=refresh_token
+ImportCredential=tg_password
 RuntimeDirectory=nest-octopus
 TemporaryFileSystem=/run
 BindReadOnlyPaths=-/etc/nest-octopus

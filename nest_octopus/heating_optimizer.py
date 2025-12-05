@@ -31,6 +31,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from nest_octopus.nest_thermostat import EcoMode, NestThermostatClient, ThermostatMode
 from nest_octopus.octopus import OctopusEnergyClient, PricePoint
+from nest_octopus.tg_supplymaster import (
+    DayOfWeek,
+    Program,
+    ProgramSlot,
+    SupplyMasterClient,
+    TimeSlot,
+    WorkMode,
+)
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -66,6 +74,11 @@ class Config:
     average_price_temp: float = 17.0
     low_price_threshold: float = 0.75
     high_price_threshold: float = 1.33
+
+    # Optional TG SupplyMaster settings
+    tg_username: Optional[str] = None
+    tg_password: Optional[str] = None
+    tg_device_name: Optional[str] = None
 
 
 @dataclass
@@ -195,6 +208,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
     client_secret_file = creds_path / "client_secret"
     refresh_token_file = creds_path / "refresh_token"
     api_key_file = creds_path / "api_key"
+    tg_password_file = creds_path / "tg_password"
 
     if not client_secret_file.exists():
         raise ConfigurationError(
@@ -213,6 +227,11 @@ def load_config(config_path: Optional[str] = None) -> Config:
     if api_key_file.exists():
         api_key = api_key_file.read_text().strip()
 
+    # TG password is optional
+    tg_password = None
+    if tg_password_file.exists():
+        tg_password = tg_password_file.read_text().strip()
+
     # Parse configuration sections
     try:
         # Tariff code and account number are optional in config
@@ -228,6 +247,15 @@ def load_config(config_path: Optional[str] = None) -> Config:
         if parser.has_option('octopus', 'mpan'):
             mpan = parser.get('octopus', 'mpan')
 
+        # Optional TG SupplyMaster settings
+        tg_username = None
+        if parser.has_section('tg_supplymaster') and parser.has_option('tg_supplymaster', 'username'):
+            tg_username = parser.get('tg_supplymaster', 'username')
+
+        tg_device_name = None
+        if parser.has_section('tg_supplymaster') and parser.has_option('tg_supplymaster', 'device_name'):
+            tg_device_name = parser.get('tg_supplymaster', 'device_name')
+
         config = Config(
             thermostat_name=parser.get('nest', 'thermostat_name'),
             client_id=parser.get('nest', 'client_id'),
@@ -238,6 +266,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
             account_number=account_number,
             api_key=api_key,
             mpan=mpan,
+            tg_username=tg_username,
+            tg_password=tg_password,
+            tg_device_name=tg_device_name,
         )
 
         # Optional heating preferences
@@ -523,14 +554,204 @@ def execute_heating_action(
         raise
 
 
-async def run_daily_cycle(config: Config, nest: NestThermostatClient) -> list[asyncio.TimerHandle]:
+def find_cheapest_windows(
+    prices: List[PricePoint],
+    window_hours: int = 2,
+    num_windows: int = 2,
+    min_gap_hours: int = 10
+) -> List[Tuple[datetime, datetime, float]]:
+    """
+    Find the cheapest time windows for running a device.
+
+    Args:
+        prices: List of price points (must be sorted chronologically)
+        window_hours: Duration of each window in hours
+        num_windows: Number of windows to find
+        min_gap_hours: Minimum gap between windows in hours
+
+    Returns:
+        List of tuples (start_time, end_time, avg_price) sorted by start time
+    """
+    if len(prices) < window_hours * 2:  # Need at least 2 price points per hour (30-min intervals)
+        logger.warning(f"Not enough price data to find {window_hours}-hour windows")
+        return []
+
+    # Calculate average price for each possible window
+    slots_per_window = window_hours * 2  # 2 slots per hour (30-min intervals)
+    windows = []
+
+    for i in range(len(prices) - slots_per_window + 1):
+        window_prices = prices[i:i + slots_per_window]
+
+        # Get start and end times
+        if isinstance(window_prices[0].valid_from, str):
+            start_time = datetime.fromisoformat(window_prices[0].valid_from.replace('Z', '+00:00'))
+        else:
+            start_time = window_prices[0].valid_from
+
+        if isinstance(window_prices[-1].valid_to, str):
+            end_time = datetime.fromisoformat(window_prices[-1].valid_to.replace('Z', '+00:00'))
+        else:
+            end_time = window_prices[-1].valid_to
+
+        # Calculate average price for this window
+        avg_price = sum(p.value_inc_vat for p in window_prices) / len(window_prices)
+
+        windows.append((start_time, end_time, avg_price, i))
+
+    # Sort by price (cheapest first)
+    windows.sort(key=lambda x: x[2])
+
+    # Select windows with minimum gap constraint
+    selected: List[Tuple[datetime, datetime, float, int]] = []
+    min_gap_slots = min_gap_hours * 2  # Convert hours to 30-min slots
+
+    for start_time, end_time, avg_price, slot_index in windows:
+        # Check if this window conflicts with already selected windows
+        conflicts = False
+        for selected_start, selected_end, _, selected_index in selected:
+            # Check if windows are too close together
+            gap = abs(slot_index - selected_index)
+            if gap < min_gap_slots:
+                conflicts = True
+                break
+
+        if not conflicts:
+            selected.append((start_time, end_time, avg_price, slot_index))
+
+            if len(selected) >= num_windows:
+                break
+
+    # Sort by start time for easier reading
+    selected.sort(key=lambda x: x[0])
+
+    # Return without the slot_index
+    result = [(start, end, price) for start, end, price, _ in selected]
+
+    logger.info(f"Found {len(result)} optimal {window_hours}-hour windows:")
+    for i, (start, end, price) in enumerate(result, 1):
+        logger.info(f"  Window {i}: {start.strftime('%H:%M')}-{end.strftime('%H:%M')} @ {price:.2f}p/kWh avg")
+
+    return result
+
+
+def program_tg_switch(
+    config: Config,
+    windows: List[Tuple[datetime, datetime, float]],
+    program_name: str = "Agile Optimized"
+) -> None:
+    """
+    Program TG SupplyMaster switch with optimal time windows.
+
+    Args:
+        config: Application configuration
+        windows: List of (start_time, end_time, avg_price) tuples
+        program_name: Name for the program
+    """
+    if not config.tg_username or not config.tg_password:
+        logger.debug("TG SupplyMaster not configured, skipping")
+        return
+
+    if not windows:
+        logger.warning("No windows to program for TG switch")
+        return
+
+    try:
+        logger.debug(f"Programming TG SupplyMaster switch with {len(windows)} windows")
+
+        with SupplyMasterClient(
+            username=config.tg_username,
+            password=config.tg_password
+        ) as tg_client:
+
+            # Set device_id if device_name is configured
+            if config.tg_device_name:
+                devices = tg_client.list_devices()
+                for device in devices:
+                    if device.name == config.tg_device_name:
+                        tg_client.device_id = device.device_id
+                        logger.debug(f"Selected TG device: {device.name} ({device.device_id})")
+                        break
+                else:
+                    logger.warning(f"TG device '{config.tg_device_name}' not found")
+                    return
+
+            # All days enabled
+            all_days = {day: True for day in DayOfWeek}
+
+            # Create program slots from windows
+            slots = []
+            for start_time, end_time, _ in windows:
+                slot = ProgramSlot(
+                    start=TimeSlot(enable=True, time=start_time.strftime("%H:%M")),
+                    end=TimeSlot(enable=True, time=end_time.strftime("%H:%M")),
+                    days=all_days
+                )
+                slots.append(slot)
+
+            # Fill remaining slots (must have 6 total)
+            empty_days = {day: False for day in DayOfWeek}
+            while len(slots) < 6:
+                slots.append(ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days=empty_days
+                ))
+
+            # Get existing programs to find one with matching name, or find an unused slot
+            programs_list = tg_client.list_programs()
+            program_id = None
+
+            # First, check if a program with this name already exists
+            for prog in programs_list.get('namelist', []):
+                if prog.get('name') == program_name:
+                    program_id = prog['id']
+                    logger.debug(f"Updating existing program '{program_name}' (ID: {program_id})")
+                    break
+
+            # If not found, find an unused program slot (one with empty name)
+            if program_id is None:
+                for prog in programs_list.get('namelist', []):
+                    if not prog.get('name'):  # Empty name means unused
+                        program_id = prog['id']
+                        logger.debug(f"Using unused program slot {program_id} for '{program_name}'")
+                        break
+                else:
+                    # No unused slot found, default to program 1
+                    program_id = "1"
+                    logger.debug(f"No unused slot found, using program {program_id} for '{program_name}'")
+
+            # Create and update program
+            program = Program(
+                id=program_id,
+                name=program_name,
+                slots=slots
+            )
+
+            tg_client.update_program(program)
+            logger.info(f"Updated TG program '{program_name}' with {len(windows)} time windows")
+
+            # Enable the program
+            tg_client.enable_program(program_id)
+            logger.info(f"Enabled TG program '{program_name}'")
+
+    except Exception as e:
+        logger.error(f"Failed to program TG switch: {e}", exc_info=True)
+        # Don't raise - TG switch is optional, don't fail the whole cycle
+
+
+async def run_daily_cycle(
+    config: Config,
+    nest: NestThermostatClient
+) -> list[asyncio.TimerHandle]:
     """
     Run one daily optimization cycle.
 
     1. Fetch next 24 hours of prices
     2. Fetch previous week of prices for comparison
     3. Calculate optimal heating schedule
-    4. Schedule all actions using call_later()
+    4. Program TG SupplyMaster switch (if configured)
+    5. Schedule all actions using call_later()
 
     Args:
         config: Application configuration
@@ -582,6 +803,21 @@ async def run_daily_cycle(config: Config, nest: NestThermostatClient) -> list[as
         )
 
         logger.debug(f"Fetched {len(weekly_prices)} price points for previous week")
+
+        # Program TG SupplyMaster switch if configured
+        if config.tg_username and config.tg_password:
+            try:
+                cheap_windows = find_cheapest_windows(
+                    daily_prices,
+                    window_hours=2,
+                    num_windows=2,
+                    min_gap_hours=10
+                )
+                if cheap_windows:
+                    program_tg_switch(config, cheap_windows)
+            except Exception as e:
+                logger.error(f"Failed to program TG switch: {e}", exc_info=True)
+                # Continue with thermostat scheduling even if TG fails
 
         # Calculate heating schedule
         actions = calculate_heating_schedule(
@@ -854,6 +1090,40 @@ def run_dry_run(config: Config) -> int:
             print("=" * 70)
             print(f"\n✓ Dry run complete. {len(actions)} actions would be executed.")
             print("  (Run without --dry-run to execute the schedule)\n")
+
+            # Calculate and display TG SupplyMaster schedule
+            print("=" * 70)
+            print("  TG SUPPLYMASTER PROGRAM")
+            print("=" * 70)
+            print()
+
+            try:
+                cheap_windows = find_cheapest_windows(
+                    daily_prices,
+                    window_hours=2,
+                    num_windows=2,
+                    min_gap_hours=10
+                )
+
+                if cheap_windows:
+                    print(f"  Device:  {config.tg_device_name or 'Auto-selected'}")
+                    print(f"  Program: Agile Optimized")
+                    print()
+
+                    for i, (start, end, avg_price) in enumerate(cheap_windows, 1):
+                        time_range = f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
+                        print(f"  Slot {i}: {time_range} @ {avg_price:.2f}p/kWh avg")
+                        print(f"         (All days)")
+                        print()
+
+                    print()
+                else:
+                    print("  ⚠️  Could not find optimal windows (insufficient price data)")
+                    print()
+
+            except Exception as e:
+                print(f"  ❌ Error calculating TG schedule: {e}")
+                print()
 
         except Exception as e:
             print(f"\n❌ ERROR: {e}")
