@@ -30,6 +30,7 @@ from nest_octopus.heating_optimizer import (
     execute_heating_action,
     find_default_config,
     load_config,
+    parse_quiet_window,
     run_daily_cycle,
     run_dry_run,
 )
@@ -1294,6 +1295,265 @@ average_price_temp = 17.0
         with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
             with pytest.raises(ValueError):
                 load_config(str(config_file))
+
+
+class TestQuietWindow:
+    """Test quiet window functionality."""
+
+    def test_parse_quiet_window_normal(self) -> None:
+        """Test parsing a normal time range (not crossing midnight)."""
+        result = parse_quiet_window("09:00-17:00")
+        assert result == (9, 0, 17, 0)
+
+    def test_parse_quiet_window_midnight_crossing(self) -> None:
+        """Test parsing a time range that crosses midnight."""
+        result = parse_quiet_window("23:00-07:00")
+        assert result == (23, 0, 7, 0)
+
+    def test_parse_quiet_window_with_minutes(self) -> None:
+        """Test parsing a time range with minutes."""
+        result = parse_quiet_window("22:30-06:45")
+        assert result == (22, 30, 6, 45)
+
+    def test_parse_quiet_window_spaces(self) -> None:
+        """Test parsing with extra spaces."""
+        result = parse_quiet_window("  09:00 - 17:00  ")
+        assert result == (9, 0, 17, 0)
+
+    def test_parse_quiet_window_invalid_format(self) -> None:
+        """Test that invalid format raises ValueError."""
+        with pytest.raises(ValueError, match="Expected 'hh:mm-hh:mm'"):
+            parse_quiet_window("invalid")
+
+    def test_parse_quiet_window_invalid_hour(self) -> None:
+        """Test that invalid hour raises ValueError."""
+        with pytest.raises(ValueError, match="Start hour must be 0-23"):
+            parse_quiet_window("25:00-07:00")
+
+    def test_parse_quiet_window_invalid_minute(self) -> None:
+        """Test that invalid minute raises ValueError."""
+        with pytest.raises(ValueError, match="Start minute must be 0-59"):
+            parse_quiet_window("09:60-17:00")
+
+    def test_parse_quiet_window_missing_colon(self) -> None:
+        """Test that missing colon raises ValueError."""
+        with pytest.raises(ValueError):
+            parse_quiet_window("0900-1700")
+
+    def test_calculate_heating_schedule_with_quiet_window_normal(self) -> None:
+        """Test that actions during a normal quiet window are filtered out."""
+        # Create prices that would generate actions during 09:00-17:00
+        prices = []
+        base_time = datetime(2024, 1, 1, 20, 0, tzinfo=timezone.utc)
+
+        # Create alternating low/high prices to generate many actions
+        for i in range(48):  # 24 hours
+            hour_offset = i // 2
+            minute = (i % 2) * 30
+            valid_from = base_time + timedelta(hours=hour_offset, minutes=minute)
+            valid_to = valid_from + timedelta(minutes=30)
+
+            # Alternate between low (3p) and high (16p) prices
+            price = 3.0 if (i // 4) % 2 == 0 else 16.0
+
+            prices.append(create_price_point(
+                valid_from.isoformat(),
+                valid_to.isoformat(),
+                price
+            ))
+
+        weekly_prices = [create_price_point(
+            '2023-12-25T00:00:00Z',
+            '2023-12-25T00:30:00Z',
+            10.0
+        )] * 336
+
+        config = Config(
+            thermostat_name='Test',
+            client_id='test',
+            client_secret='test',
+            refresh_token='test',
+            project_id='test',
+            tariff_code='AGILE-TEST',
+            quiet_window=(9, 0, 17, 0)  # 09:00-17:00
+        )
+
+        actions = calculate_heating_schedule(prices, weekly_prices, config, base_time)
+
+        # Check that no temperature-setting actions fall within 09:00-17:00 local time
+        # But ECO mode actions are allowed
+        for action in actions:
+            local_time = action.timestamp.astimezone()
+            hour = local_time.hour
+            in_quiet_window = 9 <= hour < 17
+
+            # If in quiet window and setting temperature, should not happen
+            if in_quiet_window and action.temperature is not None:
+                assert False, f"Temperature-setting action at {local_time} should be filtered in quiet window"
+
+    def test_calculate_heating_schedule_with_quiet_window_midnight_crossing(self) -> None:
+        """Test that temperature changes during a midnight-crossing quiet window are filtered out, but ECO mode changes allowed."""
+        # Create prices that would generate actions during 23:00-07:00
+        prices = []
+        base_time = datetime(2024, 1, 1, 20, 0, tzinfo=timezone.utc)
+
+        # Create alternating low/high prices
+        for i in range(48):  # 24 hours
+            hour_offset = i // 2
+            minute = (i % 2) * 30
+            valid_from = base_time + timedelta(hours=hour_offset, minutes=minute)
+            valid_to = valid_from + timedelta(minutes=30)
+
+            # Alternate between low (3p) and high (16p) prices every 2 hours
+            price = 3.0 if (i // 4) % 2 == 0 else 16.0
+
+            prices.append(create_price_point(
+                valid_from.isoformat(),
+                valid_to.isoformat(),
+                price
+            ))
+
+        weekly_prices = [create_price_point(
+            '2023-12-25T00:00:00Z',
+            '2023-12-25T00:30:00Z',
+            10.0
+        )] * 336
+
+        config = Config(
+            thermostat_name='Test',
+            client_id='test',
+            client_secret='test',
+            refresh_token='test',
+            project_id='test',
+            tariff_code='AGILE-TEST',
+            quiet_window=(23, 0, 7, 0)  # 23:00-07:00 (crosses midnight)
+        )
+
+        actions = calculate_heating_schedule(prices, weekly_prices, config, base_time)
+
+        # Check that no temperature-setting actions fall within 23:00-07:00 local time
+        # But ECO mode actions (temperature=None or eco_mode=True) are allowed
+        for action in actions:
+            local_time = action.timestamp.astimezone()
+            hour = local_time.hour
+            in_quiet_window = 23 <= hour or hour < 7
+
+            # If in quiet window and setting temperature, should not happen
+            if in_quiet_window and action.temperature is not None:
+                assert False, f"Temperature-setting action at {local_time} should be filtered in quiet window"
+
+    def test_calculate_heating_schedule_without_quiet_window(self) -> None:
+        """Test that schedule works normally without quiet window."""
+        prices = []
+        base_time = datetime(2024, 1, 1, 20, 0, tzinfo=timezone.utc)
+
+        for i in range(48):
+            hour_offset = i // 2
+            minute = (i % 2) * 30
+            valid_from = base_time + timedelta(hours=hour_offset, minutes=minute)
+            valid_to = valid_from + timedelta(minutes=30)
+            price = 3.0 if (i // 4) % 2 == 0 else 16.0
+
+            prices.append(create_price_point(
+                valid_from.isoformat(),
+                valid_to.isoformat(),
+                price
+            ))
+
+        weekly_prices = [create_price_point(
+            '2023-12-25T00:00:00Z',
+            '2023-12-25T00:30:00Z',
+            10.0
+        )] * 336
+
+        # Without quiet window
+        config_no_quiet = Config(
+            thermostat_name='Test',
+            client_id='test',
+            client_secret='test',
+            refresh_token='test',
+            project_id='test',
+            tariff_code='AGILE-TEST',
+            quiet_window=None
+        )
+
+        # With quiet window
+        config_with_quiet = Config(
+            thermostat_name='Test',
+            client_id='test',
+            client_secret='test',
+            refresh_token='test',
+            project_id='test',
+            tariff_code='AGILE-TEST',
+            quiet_window=(23, 0, 7, 0)
+        )
+
+        actions_no_quiet = calculate_heating_schedule(prices, weekly_prices, config_no_quiet, base_time)
+        actions_with_quiet = calculate_heating_schedule(prices, weekly_prices, config_with_quiet, base_time)
+
+        # Should have fewer actions with quiet window
+        assert len(actions_with_quiet) < len(actions_no_quiet)
+
+    def test_quiet_window_allows_eco_mode_blocks_temperature(self) -> None:
+        """Test that quiet window blocks temperature changes but allows ECO mode changes."""
+        # Create prices that alternate to generate both temp and ECO actions
+        prices = []
+        base_time = datetime(2024, 1, 1, 20, 0, tzinfo=timezone.utc)
+
+        for i in range(48):
+            hour_offset = i // 2
+            minute = (i % 2) * 30
+            valid_from = base_time + timedelta(hours=hour_offset, minutes=minute)
+            valid_to = valid_from + timedelta(minutes=30)
+
+            # Alternate between low (3p) and high (16p) every 2 hours
+            price = 3.0 if (i // 4) % 2 == 0 else 16.0
+
+            prices.append(create_price_point(
+                valid_from.isoformat(),
+                valid_to.isoformat(),
+                price
+            ))
+
+        weekly_prices = [create_price_point(
+            '2023-12-25T00:00:00Z',
+            '2023-12-25T00:30:00Z',
+            10.0
+        )] * 336
+
+        config = Config(
+            thermostat_name='Test',
+            client_id='test',
+            client_secret='test',
+            refresh_token='test',
+            project_id='test',
+            tariff_code='AGILE-TEST',
+            quiet_window=(23, 0, 7, 0)
+        )
+
+        actions = calculate_heating_schedule(prices, weekly_prices, config, base_time)
+
+        # Count ECO mode actions and temperature actions in quiet window
+        eco_actions_in_quiet = 0
+        temp_actions_in_quiet = 0
+
+        for action in actions:
+            local_time = action.timestamp.astimezone()
+            hour = local_time.hour
+            in_quiet_window = 23 <= hour or hour < 7
+
+            if in_quiet_window:
+                if action.eco_mode or action.temperature is None:
+                    # ECO mode change (enable or disable)
+                    eco_actions_in_quiet += 1
+                elif action.temperature is not None:
+                    # Temperature-setting action
+                    temp_actions_in_quiet += 1
+
+        # Should have ECO mode actions in quiet window
+        assert eco_actions_in_quiet > 0, "Should have ECO mode actions during quiet window"
+        # Should NOT have temperature-setting actions in quiet window
+        assert temp_actions_in_quiet == 0, "Should not have temperature-setting actions during quiet window"
 
 
 if __name__ == "__main__":

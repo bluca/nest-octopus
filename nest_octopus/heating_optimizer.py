@@ -53,6 +53,51 @@ class ConfigurationError(Exception):
     pass
 
 
+def parse_quiet_window(value: str) -> Tuple[int, int, int, int]:
+    """
+    Parse quiet window time range from format hh:mm-hh:mm.
+
+    Args:
+        value: String in format "hh:mm-hh:mm" (e.g., "23:00-07:00")
+
+    Returns:
+        Tuple of (start_hour, start_min, end_hour, end_min)
+
+    Raises:
+        ValueError: If format is invalid
+    """
+    if '-' not in value:
+        raise ValueError(f"Invalid quiet window format: '{value}'. Expected 'hh:mm-hh:mm'")
+
+    try:
+        start_str, end_str = value.split('-', 1)
+        start_parts = start_str.strip().split(':')
+        end_parts = end_str.strip().split(':')
+
+        if len(start_parts) != 2 or len(end_parts) != 2:
+            raise ValueError("Times must be in hh:mm format")
+
+        start_hour = int(start_parts[0])
+        start_min = int(start_parts[1])
+        end_hour = int(end_parts[0])
+        end_min = int(end_parts[1])
+
+        # Validate ranges
+        if not (0 <= start_hour <= 23):
+            raise ValueError(f"Start hour must be 0-23, got {start_hour}")
+        if not (0 <= start_min <= 59):
+            raise ValueError(f"Start minute must be 0-59, got {start_min}")
+        if not (0 <= end_hour <= 23):
+            raise ValueError(f"End hour must be 0-23, got {end_hour}")
+        if not (0 <= end_min <= 59):
+            raise ValueError(f"End minute must be 0-59, got {end_min}")
+
+        return (start_hour, start_min, end_hour, end_min)
+
+    except (ValueError, IndexError) as e:
+        raise ValueError(f"Invalid quiet window format: '{value}'. {e}")
+
+
 @dataclass
 class Config:
     """Application configuration."""
@@ -74,6 +119,7 @@ class Config:
     average_price_temp: float = 17.0
     low_price_threshold: float = 0.75
     high_price_threshold: float = 1.33
+    quiet_window: Optional[Tuple[int, int, int, int]] = None  # (start_hour, start_min, end_hour, end_min)
 
     # Optional TG SupplyMaster settings
     tg_username: Optional[str] = None
@@ -298,6 +344,8 @@ def load_config(config_path: Optional[str] = None) -> Config:
             config.low_price_threshold = parser.getfloat('heating', 'low_price_threshold')
         if parser.has_option('heating', 'high_price_threshold'):
             config.high_price_threshold = parser.getfloat('heating', 'high_price_threshold')
+        if parser.has_option('heating', 'quiet_window'):
+            config.quiet_window = parse_quiet_window(parser.get('heating', 'quiet_window'))
 
         # Validate Octopus Energy configuration
         if not config.tariff_code and not (config.api_key and config.account_number):
@@ -352,6 +400,9 @@ def apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
 
     if args.tg_min_gap_hours is not None:
         config.tg_min_gap_hours = args.tg_min_gap_hours
+
+    if args.quiet_window is not None:
+        config.quiet_window = args.quiet_window
 
 
 def calculate_price_statistics(
@@ -562,6 +613,42 @@ def calculate_heating_schedule(
 
     # Sort actions by timestamp
     actions.sort(key=lambda a: a.timestamp)
+
+    # Filter out actions in quiet window if configured
+    if config.quiet_window:
+        start_hour, start_min, end_hour, end_min = config.quiet_window
+        filtered_actions = []
+
+        for action in actions:
+            # Convert to local time for comparison with quiet window
+            local_time = action.timestamp
+            if local_time.tzinfo is not None:
+                local_time = local_time.astimezone()
+
+            action_hour = local_time.hour
+            action_min = local_time.minute
+            action_minutes = action_hour * 60 + action_min
+            start_minutes = start_hour * 60 + start_min
+            end_minutes = end_hour * 60 + end_min
+
+            # Check if action falls within quiet window
+            # Handle window that crosses midnight
+            in_quiet_window = False
+            if start_minutes <= end_minutes:
+                # Normal window (e.g., 09:00-17:00)
+                in_quiet_window = start_minutes <= action_minutes < end_minutes
+            else:
+                # Window crosses midnight (e.g., 23:00-07:00)
+                in_quiet_window = action_minutes >= start_minutes or action_minutes < end_minutes
+
+            # Only filter temperature-setting actions during quiet window
+            # ECO mode changes are allowed to prevent wasting energy
+            if in_quiet_window and action.temperature is not None:
+                logger.info(f"Skipping temperature change in quiet window: {action}")
+            else:
+                filtered_actions.append(action)
+
+        actions = filtered_actions
 
     # Log the schedule
     logger.debug(f"Generated heating schedule with {len(actions)} actions")
@@ -1130,6 +1217,9 @@ def run_dry_run(config: Config) -> int:
             print(f"  Daily Maximum:   {daily_max:.2f}p/kWh")
             print(f"  Low Temp:        {config.low_price_temp}°C")
             print(f"  Average Temp:    {config.average_price_temp}°C")
+            if config.quiet_window:
+                start_h, start_m, end_h, end_m = config.quiet_window
+                print(f"  Quiet Window:    {start_h:02d}:{start_m:02d}-{end_h:02d}:{end_m:02d}")
 
             # Print price graph
             print_price_graph(daily_prices)
@@ -1346,6 +1436,13 @@ async def async_main() -> int:
         default=None,
         help='TG minimum gap between windows in hours (default: 10)'
     )
+    parser.add_argument(
+        '--quiet-window',
+        type=parse_quiet_window,
+        default=None,
+        help='Quiet window time range in format hh:mm-hh:mm (e.g., "23:00-07:00"). '
+             'No heating actions will be scheduled during this window.'
+    )
     args = parser.parse_args()
 
     logger.debug("Heating Optimization Daemon starting")
@@ -1377,6 +1474,7 @@ async def async_main() -> int:
             tg_window_hours=args.tg_window_hours if args.tg_window_hours is not None else 2,
             tg_num_windows=args.tg_num_windows if args.tg_num_windows is not None else 2,
             tg_min_gap_hours=args.tg_min_gap_hours if args.tg_min_gap_hours is not None else 10,
+            quiet_window=args.quiet_window,
         )
     else:
         # Load full configuration
