@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  unit-test:
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Install
+        run: |
+          sudo apt-get install --assume-yes --no-install-recommends python3-build python3-mypy python3-pytest python3-pytest-asyncio python3-setuptools-scm python3-typeshed python3-requests
+
+      - name: Unit Tests
+        run: |
+          python3 -m pytest --version
+          python3 -m pytest -sv
+
+      - name: Test execution from current working directory
+        run: python3 -m nest_octopus.heating_optimizer --dry-run --tariff-code E-1R-AGILE-24-10-01-N
+
