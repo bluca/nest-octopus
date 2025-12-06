@@ -448,13 +448,19 @@ def calculate_heating_schedule(
         prices, weekly_prices
     )
 
-    # Helper function to get datetime from price
+    # Helper function to get datetime from price (always UTC)
     def get_price_datetime(price: PricePoint) -> datetime:
         if isinstance(price.valid_from, str):
-            return datetime.fromisoformat(price.valid_from.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(price.valid_from.replace('Z', '+00:00'))
+            # Ensure it's UTC
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
         # valid_from must be datetime if not str
         assert isinstance(price.valid_from, datetime)
-        return price.valid_from
+        if price.valid_from.tzinfo is None:
+            return price.valid_from.replace(tzinfo=timezone.utc)
+        return price.valid_from.astimezone(timezone.utc)
 
     # Classify each price point (prices are already sorted chronologically)
     classified = [
@@ -646,16 +652,32 @@ def find_cheapest_windows(
     for i in range(len(prices) - slots_per_window + 1):
         window_prices = prices[i:i + slots_per_window]
 
-        # Get start and end times
+        # Get start and end times (ensure UTC)
         if isinstance(window_prices[0].valid_from, str):
             start_time = datetime.fromisoformat(window_prices[0].valid_from.replace('Z', '+00:00'))
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+            else:
+                start_time = start_time.astimezone(timezone.utc)
         else:
             start_time = window_prices[0].valid_from
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+            else:
+                start_time = start_time.astimezone(timezone.utc)
 
         if isinstance(window_prices[-1].valid_to, str):
             end_time = datetime.fromisoformat(window_prices[-1].valid_to.replace('Z', '+00:00'))
+            if end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=timezone.utc)
+            else:
+                end_time = end_time.astimezone(timezone.utc)
         else:
             end_time = window_prices[-1].valid_to
+            if end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=timezone.utc)
+            else:
+                end_time = end_time.astimezone(timezone.utc)
 
         # Calculate average price for this window
         avg_price = sum(p.value_inc_vat for p in window_prices) / len(window_prices)
@@ -838,8 +860,8 @@ async def run_daily_cycle(
         # Device auto-selected during client initialization
         logger.debug(f"Using thermostat: {nest.device_id}")
 
-        # Fetch prices for next 24 hours
-        now = datetime.now()
+        # Fetch prices for next 24 hours (use UTC for all calculations)
+        now = datetime.now(timezone.utc)
         tomorrow = now + timedelta(days=1)
         logger.debug(f"Fetching prices from {now.isoformat()} to {tomorrow.isoformat()}")
 
@@ -894,14 +916,21 @@ async def run_daily_cycle(
             logger.warning("No heating actions scheduled")
             return handles
 
-        # Schedule all actions using call_later
+        # Schedule all actions using call_later (all times in UTC)
         loop = asyncio.get_running_loop()
-        current_time = datetime.now(timezone.utc) if actions[0].timestamp.tzinfo else datetime.now()
+        current_time = datetime.now(timezone.utc)
 
         logger.info(f"Scheduling {len(actions)} heating actions")
         for action in actions:
+            # Ensure action timestamp is UTC
+            action_time = action.timestamp
+            if action_time.tzinfo is None:
+                action_time = action_time.replace(tzinfo=timezone.utc)
+            else:
+                action_time = action_time.astimezone(timezone.utc)
+
             # Calculate delay until this action
-            delay_seconds = (action.timestamp - current_time).total_seconds()
+            delay_seconds = (action_time - current_time).total_seconds()
 
             if delay_seconds < 0:
                 logger.warning(f"Skipping past action: {action}")
@@ -1016,7 +1045,7 @@ def print_price_graph(prices: List[PricePoint]) -> None:
     # X-axis
     print("          +" + "-" * len(sampled_prices))
 
-    # Time labels
+    # Time labels (convert UTC to local time for display)
     print("           ", end="")
     for i, price in enumerate(sampled_prices):
         if i % 8 == 0:  # Show label every 4 hours
@@ -1024,6 +1053,9 @@ def print_price_graph(prices: List[PricePoint]) -> None:
                 time = datetime.fromisoformat(price.valid_from.replace('Z', '+00:00'))
             else:
                 time = price.valid_from
+            # Convert to local time for display
+            if time.tzinfo is not None:
+                time = time.astimezone()
             hour = time.strftime("%H:%M")
             print(hour, end=" " * (8 - len(hour) + 1))
     print("\n")
@@ -1051,10 +1083,13 @@ def run_dry_run(config: Config) -> int:
         mpan=config.mpan
     ) as octopus:
         try:
-            # Fetch prices for next 24 hours
-            now = datetime.now()
+            # Fetch prices for next 24 hours (use UTC internally)
+            now = datetime.now(timezone.utc)
             tomorrow = now + timedelta(days=1)
-            print(f"📊 Fetching prices from {now.strftime('%Y-%m-%d %H:%M')} to {tomorrow.strftime('%Y-%m-%d %H:%M')}...")
+            # Display in local time
+            now_local = now.astimezone()
+            tomorrow_local = tomorrow.astimezone()
+            print(f"📊 Fetching prices from {now_local.strftime('%Y-%m-%d %H:%M')} to {tomorrow_local.strftime('%Y-%m-%d %H:%M')}...")
 
             daily_prices = octopus.get_unit_rates(
                 tariff_code=config.tariff_code,
@@ -1116,9 +1151,15 @@ def run_dry_run(config: Config) -> int:
             print("=" * 70)
             print()
 
-            # Helper to find price at a given timestamp
+            # Helper to find price at a given timestamp (all comparisons in UTC)
             def find_price_at(timestamp: datetime, prices: List[PricePoint]) -> Optional[PricePoint]:
                 """Find the price point active at a given timestamp."""
+                # Ensure timestamp is UTC
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.replace(tzinfo=timezone.utc)
+                else:
+                    timestamp = timestamp.astimezone(timezone.utc)
+
                 for price in prices:
                     if isinstance(price.valid_from, str):
                         valid_from = datetime.fromisoformat(price.valid_from.replace('Z', '+00:00'))
@@ -1127,13 +1168,28 @@ def run_dry_run(config: Config) -> int:
                         valid_from = price.valid_from
                         valid_to = price.valid_to
 
+                    # Ensure UTC for comparison
+                    if valid_from.tzinfo is None:
+                        valid_from = valid_from.replace(tzinfo=timezone.utc)
+                    else:
+                        valid_from = valid_from.astimezone(timezone.utc)
+
+                    if valid_to.tzinfo is None:
+                        valid_to = valid_to.replace(tzinfo=timezone.utc)
+                    else:
+                        valid_to = valid_to.astimezone(timezone.utc)
+
                     if valid_from <= timestamp < valid_to:
                         return price
                 return None
 
-            # Pretty print the schedule
+            # Pretty print the schedule (convert to local time for display)
             for i, action in enumerate(actions, 1):
-                time_str = action.timestamp.strftime("%a %H:%M")
+                # Convert to local time for display
+                local_time = action.timestamp
+                if local_time.tzinfo is not None:
+                    local_time = local_time.astimezone()
+                time_str = local_time.strftime("%a %H:%M")
 
                 # Find the price at this action time
                 price = find_price_at(action.timestamp, daily_prices)
@@ -1357,19 +1413,25 @@ async def async_main() -> int:
     loop = asyncio.get_running_loop()
 
     def schedule_next_cycle() -> None:
-        """Schedule the next daily cycle at 8pm."""
+        """Schedule the next daily cycle at 8pm local time."""
         nonlocal next_cycle_handle
 
-        # Calculate next 8pm
-        now = datetime.now()
-        next_run = now.replace(hour=20, minute=0, second=0, microsecond=0)
+        # Calculate next 8pm in local time, then convert to UTC for calculation
+        now_local = datetime.now().astimezone()
+        now_utc = datetime.now(timezone.utc)
+
+        # Find next 8pm in local time
+        next_run_local = now_local.replace(hour=20, minute=0, second=0, microsecond=0)
 
         # If it's already past 8pm, schedule for tomorrow
-        if now.hour >= 20:
-            next_run += timedelta(days=1)
+        if now_local.hour >= 20:
+            next_run_local += timedelta(days=1)
 
-        delay_seconds = (next_run - datetime.now()).total_seconds()
-        logger.debug(f"Next cycle scheduled for {next_run.isoformat()} (in {delay_seconds/3600:.1f} hours)")
+        # Convert to UTC for the actual delay calculation
+        next_run_utc = next_run_local.astimezone(timezone.utc)
+
+        delay_seconds = (next_run_utc - now_utc).total_seconds()
+        logger.debug(f"Next cycle scheduled for {next_run_local.strftime('%Y-%m-%d %H:%M %Z')} (in {delay_seconds/3600:.1f} hours)")
 
         next_cycle_handle = loop.call_later(delay_seconds, run_cycle_callback)
 
