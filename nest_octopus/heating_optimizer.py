@@ -40,11 +40,7 @@ from nest_octopus.tg_supplymaster import (
     WorkMode,
 )
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(name)s - %(levelname)s - %(message)s',
-    force=True,
-)
+# Logger will be configured later based on config/CLI args
 logger = logging.getLogger(__name__)
 
 
@@ -128,6 +124,9 @@ class Config:
     tg_window_hours: int = 2  # Duration of each window
     tg_num_windows: int = 2  # Number of windows per day
     tg_min_gap_hours: int = 10  # Minimum gap between windows
+
+    # Logging
+    logging_level: str = 'WARNING'  # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 
 
 @dataclass
@@ -347,6 +346,10 @@ def load_config(config_path: Optional[str] = None) -> Config:
         if parser.has_option('heating', 'quiet_window'):
             config.quiet_window = parse_quiet_window(parser.get('heating', 'quiet_window'))
 
+        # Optional logging configuration
+        if parser.has_option('logging', 'level'):
+            config.logging_level = parser.get('logging', 'level').upper()
+
         # Validate Octopus Energy configuration
         if not config.tariff_code and not (config.api_key and config.account_number):
             raise ConfigurationError(
@@ -403,6 +406,41 @@ def apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
 
     if args.quiet_window is not None:
         config.quiet_window = args.quiet_window
+
+    if args.log_level is not None:
+        config.logging_level = args.log_level.upper()
+
+
+def configure_logging(level: str) -> None:
+    """
+    Configure logging level for all modules.
+
+    Args:
+        level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    """
+    # Map string to logging level
+    level_map = {
+        'DEBUG': logging.DEBUG,
+        'INFO': logging.INFO,
+        'WARNING': logging.WARNING,
+        'ERROR': logging.ERROR,
+        'CRITICAL': logging.CRITICAL,
+    }
+
+    log_level = level_map.get(level.upper(), logging.WARNING)
+
+    # Configure root logger
+    logging.basicConfig(
+        level=log_level,
+        format='%(name)s - %(levelname)s - %(message)s',
+        force=True,
+    )
+
+    # Configure module loggers
+    logging.getLogger('nest_octopus.heating_optimizer').setLevel(log_level)
+    logging.getLogger('nest_octopus.nest_thermostat').setLevel(log_level)
+    logging.getLogger('nest_octopus.octopus').setLevel(log_level)
+    logging.getLogger('nest_octopus.tg_supplymaster').setLevel(log_level)
 
 
 def calculate_price_statistics(
@@ -1443,6 +1481,13 @@ async def async_main() -> int:
         help='Quiet window time range in format hh:mm-hh:mm (e.g., "23:00-07:00"). '
              'No heating actions will be scheduled during this window.'
     )
+    parser.add_argument(
+        '--log-level',
+        type=str,
+        default=None,
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        help='Logging level (default: WARNING)'
+    )
     args = parser.parse_args()
 
     logger.debug("Heating Optimization Daemon starting")
@@ -1475,15 +1520,21 @@ async def async_main() -> int:
             tg_num_windows=args.tg_num_windows if args.tg_num_windows is not None else 2,
             tg_min_gap_hours=args.tg_min_gap_hours if args.tg_min_gap_hours is not None else 10,
             quiet_window=args.quiet_window,
+            logging_level=args.log_level.upper() if args.log_level is not None else 'WARNING',
         )
+        # Configure logging with the specified level
+        configure_logging(config.logging_level)
     else:
         # Load full configuration
         try:
             config = load_config(config_path)
-            logger.debug("Configuration loaded successfully")
 
             # Override with command line arguments if specified
             apply_cli_overrides(config, args)
+
+            # Configure logging with the specified level
+            configure_logging(config.logging_level)
+            logger.debug("Configuration loaded successfully")
         except ConfigurationError as e:
             logger.error(f"Configuration error: {e}")
             return 1

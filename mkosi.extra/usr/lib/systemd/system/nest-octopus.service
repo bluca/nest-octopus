@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify-reload
-ExecStart=/usr/bin/python3 -m nest_octopus.heating_optimizer
+ExecStart=/usr/bin/python3 -u -m nest_octopus.heating_optimizer
 Restart=on-failure
 ImportCredential=api_key
 ImportCredential=client_secret
