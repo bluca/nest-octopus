@@ -604,7 +604,7 @@ def calculate_heating_schedule(
                 ))
                 current_mode = 'AVERAGE'
 
-        # If exiting HIGH period, always disable ECO mode first (without setting temperature)
+        # If exiting HIGH period, disable ECO mode without setting temperature
         if previous_category == PriceCategory.HIGH and current_mode == 'ECO':
             actions.append(HeatingAction(
                 timestamp=period_start,
@@ -612,7 +612,8 @@ def calculate_heating_schedule(
                 eco_mode=False,
                 reason=f"End of HIGH price period - disabling ECO mode"
             ))
-            current_mode = None
+            # After disabling ECO, don't set a new temperature - let thermostat maintain current temp
+            current_mode = 'POST_ECO'
 
         if period_category == PriceCategory.LOW:
             # Heat to comfort temperature during low prices
@@ -627,13 +628,17 @@ def calculate_heating_schedule(
 
         elif period_category == PriceCategory.AVERAGE:
             # Maintain basic comfort during average prices
-            if current_mode != 'AVERAGE':
+            # Don't set temperature if we just disabled ECO mode
+            if current_mode != 'AVERAGE' and current_mode != 'POST_ECO':
                 actions.append(HeatingAction(
                     timestamp=period_start,
                     temperature=config.average_price_temp,
                     eco_mode=False,
                     reason=f"AVERAGE price period ({period_start.strftime('%H:%M')})"
                 ))
+                current_mode = 'AVERAGE'
+            elif current_mode == 'POST_ECO':
+                # Just came out of ECO mode, don't change temperature
                 current_mode = 'AVERAGE'
 
         elif period_category == PriceCategory.HIGH:

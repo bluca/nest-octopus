@@ -719,6 +719,79 @@ class TestSchedulingLogic:
         eco_action = next((a for a in actions_after_low
                           if a.eco_mode and a.timestamp >= return_to_average.timestamp), None)
         assert eco_action is not None, "Should enable ECO mode for HIGH price period"
+
+    def test_disabling_eco_mode_does_not_set_temperature(self) -> None:
+        """Test that when exiting HIGH period (ECO mode), temperature is not set when entering AVERAGE."""
+        # Create scenario: AVERAGE → HIGH → AVERAGE → LOW
+        # When transitioning HIGH→AVERAGE, ECO should be disabled WITHOUT setting temperature
+        prices = [
+            create_price_point('2024-12-08T08:00:00Z', '2024-12-08T08:30:00Z', 18.0),  # AVERAGE
+            create_price_point('2024-12-08T08:30:00Z', '2024-12-08T09:00:00Z', 50.0),  # HIGH
+            create_price_point('2024-12-08T09:00:00Z', '2024-12-08T09:30:00Z', 45.0),  # HIGH
+            create_price_point('2024-12-08T09:30:00Z', '2024-12-08T10:00:00Z', 16.0),  # AVERAGE
+            create_price_point('2024-12-08T10:00:00Z', '2024-12-08T10:30:00Z', 17.0),  # AVERAGE
+            create_price_point('2024-12-08T10:30:00Z', '2024-12-08T11:00:00Z', 8.0),   # LOW
+        ]
+
+        weekly_prices = [
+            create_price_point('2024-12-01T10:00:00Z', '2024-12-01T10:30:00Z', 20.0)
+        ]
+
+        config = Config(
+            tariff_code="TEST",
+            thermostat_name="test",
+            client_id="id",
+            client_secret="secret",
+            refresh_token="token",
+            project_id="proj",
+            low_price_temp=20.0,
+            average_price_temp=17.0
+        )
+
+        actions = calculate_heating_schedule(
+            prices, weekly_prices, config, datetime(2024, 12, 7, 20, 0, tzinfo=timezone.utc)
+        )
+
+        sorted_actions = sorted(actions, key=lambda a: a.timestamp)
+
+        # Action 1: Should set temperature to 17°C at start (AVERAGE period)
+        action_08_00 = next((a for a in sorted_actions if a.timestamp.hour == 8 and a.timestamp.minute == 0), None)
+        assert action_08_00 is not None, "Should have action at 08:00"
+        assert action_08_00.temperature == 17.0, "Should set to 17°C during initial AVERAGE period"
+        assert not action_08_00.eco_mode, "Should not enable ECO mode"
+
+        # Action 2: Should enable ECO mode at 08:30 (HIGH period)
+        action_08_30 = next((a for a in sorted_actions if a.timestamp.hour == 8 and a.timestamp.minute == 30), None)
+        assert action_08_30 is not None, "Should have action at 08:30"
+        assert action_08_30.eco_mode, "Should enable ECO mode during HIGH prices"
+        assert action_08_30.temperature is None, "ECO mode action should not set temperature"
+
+        # Action 3: Should ONLY disable ECO mode at 09:30, WITHOUT setting temperature
+        action_09_30 = next((a for a in sorted_actions if a.timestamp.hour == 9 and a.timestamp.minute == 30), None)
+        assert action_09_30 is not None, "Should have action at 09:30"
+        assert not action_09_30.eco_mode, "Should disable ECO mode"
+        assert action_09_30.temperature is None, "Should NOT set temperature when disabling ECO mode"
+        assert "End of HIGH price period" in action_09_30.reason, "Reason should indicate end of HIGH period"
+
+        # Action 4: Should set temperature to 20°C at 10:30 (LOW period)
+        action_10_30 = next((a for a in sorted_actions if a.timestamp.hour == 10 and a.timestamp.minute == 30), None)
+        assert action_10_30 is not None, "Should have action at 10:30"
+        assert action_10_30.temperature == 20.0, "Should set to 20°C during LOW period"
+        assert not action_10_30.eco_mode, "Should not enable ECO mode during LOW prices"
+
+        # Verify NO action sets temperature during AVERAGE period after ECO disable
+        average_after_eco = [a for a in sorted_actions
+                            if a.timestamp.hour == 9 and a.timestamp.minute == 30
+                            or a.timestamp.hour == 10 and a.timestamp.minute == 0]
+        for action in average_after_eco:
+            if action.timestamp.hour == 9:  # The ECO disable action
+                assert action.temperature is None, "ECO disable should not set temperature"
+            # No action at 10:00 since we're staying in AVERAGE after POST_ECO state
+
+        # Total actions should be: 08:00 (17°C), 08:30 (ECO), 09:30 (disable ECO), 10:30 (20°C)
+        assert len(sorted_actions) == 4, f"Should have exactly 4 actions, got {len(sorted_actions)}"
+
+
 class TestIntegration:
     """Integration tests with realistic scenarios."""
 
