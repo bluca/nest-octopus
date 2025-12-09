@@ -28,9 +28,11 @@ from nest_octopus.heating_optimizer import (
     calculate_price_statistics,
     classify_price,
     execute_heating_action,
+    find_cheapest_windows,
     find_default_config,
     load_config,
     parse_quiet_window,
+    parse_tg_active_period,
     run_daily_cycle,
     run_dry_run,
 )
@@ -1627,6 +1629,202 @@ class TestQuietWindow:
         assert eco_actions_in_quiet > 0, "Should have ECO mode actions during quiet window"
         # Should NOT have temperature-setting actions in quiet window
         assert temp_actions_in_quiet == 0, "Should not have temperature-setting actions during quiet window"
+
+
+class TestTGActivePeriod:
+    """Test TG SupplyMaster active_period functionality."""
+
+    def test_parse_tg_active_period_normal(self) -> None:
+        """Test parsing normal active period."""
+        result = parse_tg_active_period("05:00-20:00")
+        assert result == (5, 0, 20, 0)
+
+    def test_parse_tg_active_period_midnight_crossing(self) -> None:
+        """Test parsing midnight-crossing active period."""
+        result = parse_tg_active_period("22:00-06:00")
+        assert result == (22, 0, 6, 0)
+
+    def test_parse_tg_active_period_invalid(self) -> None:
+        """Test that invalid format raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid TG active period format"):
+            parse_tg_active_period("invalid")
+
+    def test_find_cheapest_windows_with_active_period_excludes_boundary_violation(self) -> None:
+        """Test that windows ending outside active_period are excluded."""
+        # Create prices where 19:30-21:30 would be cheap but crosses 20:00 boundary
+        prices = []
+        for hour in range(24):
+            if hour in [5, 6]:
+                price = 13.0  # Cheap at 5-7am
+            elif hour in [19, 20]:
+                price = 14.0  # Cheaper at 7-9pm but crosses boundary
+            elif hour in [18]:
+                price = 15.0  # Slightly more expensive but fits
+            else:
+                price = 25.0  # Expensive
+
+            prices.append(create_price_point(
+                f'2024-12-08T{hour:02d}:00:00Z',
+                f'2024-12-08T{hour:02d}:30:00Z',
+                price
+            ))
+            if hour < 23:
+                prices.append(create_price_point(
+                    f'2024-12-08T{hour:02d}:30:00Z',
+                    f'2024-12-08T{(hour+1):02d}:00:00Z',
+                    price
+                ))
+
+        # Find windows with active_period = 05:00-20:00
+        windows = find_cheapest_windows(
+            prices,
+            window_hours=2,
+            num_windows=2,
+            min_gap_hours=4,
+            active_period=(5, 0, 20, 0)
+        )
+
+        # Should find 2 windows
+        assert len(windows) == 2, f"Expected 2 windows, got {len(windows)}"
+
+        # First window should be 05:00-07:00
+        start1, end1, _ = windows[0]
+        assert start1.astimezone().hour == 5 and start1.astimezone().minute == 0
+        assert end1.astimezone().hour == 7 and end1.astimezone().minute == 0
+
+        # Second window should be 18:00-20:00, NOT 19:30-21:30
+        start2, end2, _ = windows[1]
+        assert start2.astimezone().hour == 18 and start2.astimezone().minute == 0
+        assert end2.astimezone().hour == 20 and end2.astimezone().minute == 0
+
+        # Verify no window ends after 20:00
+        for start, end, _ in windows:
+            end_local = end.astimezone()
+            end_minutes = end_local.hour * 60 + end_local.minute
+            assert end_minutes <= 20 * 60, f"Window {start.strftime('%H:%M')}-{end.strftime('%H:%M')} ends after 20:00"
+
+    def test_find_cheapest_windows_with_active_period_normal_period(self) -> None:
+        """Test active_period with normal daytime period."""
+        prices = []
+        for hour in range(24):
+            if hour in [2, 3]:
+                price = 10.0  # Very cheap at 2-4am (excluded)
+            elif hour in [5, 6]:
+                price = 13.0  # Cheap at 5-7am (included)
+            else:
+                price = 25.0
+
+            prices.append(create_price_point(
+                f'2024-12-08T{hour:02d}:00:00Z',
+                f'2024-12-08T{hour:02d}:30:00Z',
+                price
+            ))
+            if hour < 23:
+                prices.append(create_price_point(
+                    f'2024-12-08T{hour:02d}:30:00Z',
+                    f'2024-12-08T{(hour+1):02d}:00:00Z',
+                    price
+                ))
+
+        windows = find_cheapest_windows(
+            prices,
+            window_hours=2,
+            num_windows=1,
+            min_gap_hours=4,
+            active_period=(5, 0, 20, 0)
+        )
+
+        # Should find 05:00-07:00, not 02:00-04:00
+        assert len(windows) == 1
+        start, end, _ = windows[0]
+        assert start.astimezone().hour == 5 and start.astimezone().minute == 0
+        assert end.astimezone().hour == 7 and end.astimezone().minute == 0
+
+    def test_find_cheapest_windows_with_active_period_midnight_crossing(self) -> None:
+        """Test active_period with midnight-crossing period."""
+        prices = []
+        for hour in range(24):
+            if hour in [2, 3]:
+                price = 10.0  # Very cheap at 2-4am (included)
+            elif hour in [5, 6]:
+                price = 13.0  # Cheap at 5-7am (excluded - ends after 6am)
+            elif hour in [22, 23]:
+                price = 12.0  # Cheap at 22-00 (included)
+            else:
+                price = 25.0
+
+            prices.append(create_price_point(
+                f'2024-12-08T{hour:02d}:00:00Z',
+                f'2024-12-08T{hour:02d}:30:00Z',
+                price
+            ))
+            if hour < 23:
+                prices.append(create_price_point(
+                    f'2024-12-08T{hour:02d}:30:00Z',
+                    f'2024-12-08T{(hour+1):02d}:00:00Z',
+                    price
+                ))
+
+        windows = find_cheapest_windows(
+            prices,
+            window_hours=2,
+            num_windows=2,
+            min_gap_hours=4,
+            active_period=(22, 0, 6, 0)  # Night only: 22:00-06:00
+        )
+
+        # Should find 02:00-04:00 and/or 22:00-00:00
+        assert len(windows) >= 1
+
+        # Check that all windows are within the midnight-crossing period
+        for start, end, _ in windows:
+            start_local = start.astimezone()
+            end_local = end.astimezone()
+            start_hour = start_local.hour
+            end_hour = end_local.hour
+
+            # Start should be >= 22:00 or < 06:00
+            assert start_hour >= 22 or start_hour < 6, \
+                f"Window start {start_hour}:00 not in 22:00-06:00 period"
+
+            # End should be >= 22:00 or <= 06:00
+            assert end_hour >= 22 or end_hour <= 6, \
+                f"Window end {end_hour}:00 not in 22:00-06:00 period"
+
+    def test_find_cheapest_windows_without_active_period(self) -> None:
+        """Test that windows work normally without active_period."""
+        prices = []
+        for hour in range(24):
+            if hour in [2, 3]:
+                price = 10.0  # Very cheap at 2-4am
+            else:
+                price = 25.0
+
+            prices.append(create_price_point(
+                f'2024-12-08T{hour:02d}:00:00Z',
+                f'2024-12-08T{hour:02d}:30:00Z',
+                price
+            ))
+            if hour < 23:
+                prices.append(create_price_point(
+                    f'2024-12-08T{hour:02d}:30:00Z',
+                    f'2024-12-08T{(hour+1):02d}:00:00Z',
+                    price
+                ))
+
+        windows = find_cheapest_windows(
+            prices,
+            window_hours=2,
+            num_windows=1,
+            min_gap_hours=4,
+            active_period=None  # No restriction
+        )
+
+        # Should find cheapest window regardless of time
+        assert len(windows) == 1
+        start, end, _ = windows[0]
+        assert start.astimezone().hour == 2 and start.astimezone().minute == 0
+        assert end.astimezone().hour == 4 and end.astimezone().minute == 0
 
 
 if __name__ == "__main__":

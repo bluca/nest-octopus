@@ -49,12 +49,13 @@ class ConfigurationError(Exception):
     pass
 
 
-def parse_quiet_window(value: str) -> Tuple[int, int, int, int]:
+def parse_time_range(value: str, param_name: str = "time range") -> Tuple[int, int, int, int]:
     """
-    Parse quiet window time range from format hh:mm-hh:mm.
+    Parse time range from format hh:mm-hh:mm.
 
     Args:
         value: String in format "hh:mm-hh:mm" (e.g., "23:00-07:00")
+        param_name: Name of parameter for error messages
 
     Returns:
         Tuple of (start_hour, start_min, end_hour, end_min)
@@ -63,7 +64,7 @@ def parse_quiet_window(value: str) -> Tuple[int, int, int, int]:
         ValueError: If format is invalid
     """
     if '-' not in value:
-        raise ValueError(f"Invalid quiet window format: '{value}'. Expected 'hh:mm-hh:mm'")
+        raise ValueError(f"Invalid {param_name} format: '{value}'. Expected 'hh:mm-hh:mm'")
 
     try:
         start_str, end_str = value.split('-', 1)
@@ -91,7 +92,39 @@ def parse_quiet_window(value: str) -> Tuple[int, int, int, int]:
         return (start_hour, start_min, end_hour, end_min)
 
     except (ValueError, IndexError) as e:
-        raise ValueError(f"Invalid quiet window format: '{value}'. {e}")
+        raise ValueError(f"Invalid {param_name} format: '{value}'. {e}")
+
+
+def parse_quiet_window(value: str) -> Tuple[int, int, int, int]:
+    """
+    Parse quiet window time range from format hh:mm-hh:mm.
+
+    Args:
+        value: String in format "hh:mm-hh:mm" (e.g., "23:00-07:00")
+
+    Returns:
+        Tuple of (start_hour, start_min, end_hour, end_min)
+
+    Raises:
+        ValueError: If format is invalid
+    """
+    return parse_time_range(value, "quiet window")
+
+
+def parse_tg_active_period(value: str) -> Tuple[int, int, int, int]:
+    """
+    Parse TG active period time range from format hh:mm-hh:mm.
+
+    Args:
+        value: String in format "hh:mm-hh:mm" (e.g., "04:00-20:00")
+
+    Returns:
+        Tuple of (start_hour, start_min, end_hour, end_min)
+
+    Raises:
+        ValueError: If format is invalid
+    """
+    return parse_time_range(value, "TG active period")
 
 
 @dataclass
@@ -124,6 +157,7 @@ class Config:
     tg_window_hours: int = 2  # Duration of each window
     tg_num_windows: int = 2  # Number of windows per day
     tg_min_gap_hours: int = 10  # Minimum gap between windows
+    tg_active_period: Optional[Tuple[int, int, int, int]] = None  # (start_hour, start_min, end_hour, end_min)
 
     # Logging
     logging_level: str = 'WARNING'  # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
@@ -316,6 +350,10 @@ def load_config(config_path: Optional[str] = None) -> Config:
         if parser.has_section('tg_supplymaster') and parser.has_option('tg_supplymaster', 'min_gap_hours'):
             tg_min_gap_hours = parser.getint('tg_supplymaster', 'min_gap_hours')
 
+        tg_active_period = None
+        if parser.has_section('tg_supplymaster') and parser.has_option('tg_supplymaster', 'active_period'):
+            tg_active_period = parse_tg_active_period(parser.get('tg_supplymaster', 'active_period'))
+
         config = Config(
             thermostat_name=parser.get('nest', 'thermostat_name'),
             client_id=parser.get('nest', 'client_id'),
@@ -332,6 +370,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
             tg_window_hours=tg_window_hours,
             tg_num_windows=tg_num_windows,
             tg_min_gap_hours=tg_min_gap_hours,
+            tg_active_period=tg_active_period,
         )
 
         # Optional heating preferences
@@ -403,6 +442,9 @@ def apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
 
     if args.tg_min_gap_hours is not None:
         config.tg_min_gap_hours = args.tg_min_gap_hours
+
+    if args.tg_active_period is not None:
+        config.tg_active_period = args.tg_active_period
 
     if args.quiet_window is not None:
         config.quiet_window = args.quiet_window
@@ -757,7 +799,8 @@ def find_cheapest_windows(
     prices: List[PricePoint],
     window_hours: int = 2,
     num_windows: int = 2,
-    min_gap_hours: int = 10
+    min_gap_hours: int = 10,
+    active_period: Optional[Tuple[int, int, int, int]] = None
 ) -> List[Tuple[datetime, datetime, float]]:
     """
     Find the cheapest time windows for running a device.
@@ -767,6 +810,7 @@ def find_cheapest_windows(
         window_hours: Duration of each window in hours
         num_windows: Number of windows to find
         min_gap_hours: Minimum gap between windows in hours
+        active_period: Optional (start_hour, start_min, end_hour, end_min) to restrict windows
 
     Returns:
         List of tuples (start_time, end_time, avg_price) sorted by start time
@@ -811,6 +855,37 @@ def find_cheapest_windows(
 
         # Calculate average price for this window
         avg_price = sum(p.value_inc_vat for p in window_prices) / len(window_prices)
+
+        # Check if window is within active period (if configured)
+        if active_period is not None:
+            start_hour, start_min, end_hour, end_min = active_period
+
+            # Convert window times to local time for comparison (uses system local timezone)
+            window_start_local = start_time.astimezone()
+            window_end_local = end_time.astimezone()
+
+            # Check if BOTH window start AND end are within active period
+            window_start_minutes = window_start_local.hour * 60 + window_start_local.minute
+            window_end_minutes = window_end_local.hour * 60 + window_end_local.minute
+            active_start_minutes = start_hour * 60 + start_min
+            active_end_minutes = end_hour * 60 + end_min
+
+            # Handle period crossing midnight
+            if active_end_minutes < active_start_minutes:
+                # Period crosses midnight (e.g., 20:00-04:00)
+                start_in_period = (window_start_minutes >= active_start_minutes or
+                                  window_start_minutes < active_end_minutes)
+                end_in_period = (window_end_minutes >= active_start_minutes or
+                                window_end_minutes < active_end_minutes)
+                in_active_period = start_in_period and end_in_period
+            else:
+                # Normal period (e.g., 04:00-20:00)
+                start_in_period = (active_start_minutes <= window_start_minutes < active_end_minutes)
+                end_in_period = (active_start_minutes < window_end_minutes <= active_end_minutes)
+                in_active_period = start_in_period and end_in_period
+
+            if not in_active_period:
+                continue  # Skip this window
 
         windows.append((start_time, end_time, avg_price, i))
 
@@ -1026,7 +1101,8 @@ async def run_daily_cycle(
                     daily_prices,
                     window_hours=config.tg_window_hours,
                     num_windows=config.tg_num_windows,
-                    min_gap_hours=config.tg_min_gap_hours
+                    min_gap_hours=config.tg_min_gap_hours,
+                    active_period=config.tg_active_period
                 )
                 if cheap_windows:
                     program_tg_switch(config, cheap_windows)
@@ -1354,7 +1430,8 @@ def run_dry_run(config: Config) -> int:
                     daily_prices,
                     window_hours=config.tg_window_hours,
                     num_windows=config.tg_num_windows,
-                    min_gap_hours=config.tg_min_gap_hours
+                    min_gap_hours=config.tg_min_gap_hours,
+                    active_period=config.tg_active_period
                 )
 
                 if cheap_windows:
@@ -1480,6 +1557,13 @@ async def async_main() -> int:
         help='TG minimum gap between windows in hours (default: 10)'
     )
     parser.add_argument(
+        '--tg-active-period',
+        type=parse_tg_active_period,
+        default=None,
+        help='TG active period time range in format hh:mm-hh:mm (e.g., "04:00-20:00"). '
+             'TG switch will only be programmed to turn on during this window.'
+    )
+    parser.add_argument(
         '--quiet-window',
         type=parse_quiet_window,
         default=None,
@@ -1524,6 +1608,7 @@ async def async_main() -> int:
             tg_window_hours=args.tg_window_hours if args.tg_window_hours is not None else 2,
             tg_num_windows=args.tg_num_windows if args.tg_num_windows is not None else 2,
             tg_min_gap_hours=args.tg_min_gap_hours if args.tg_min_gap_hours is not None else 10,
+            tg_active_period=args.tg_active_period,
             quiet_window=args.quiet_window,
             logging_level=args.log_level.upper() if args.log_level is not None else 'WARNING',
         )
