@@ -31,6 +31,8 @@ from nest_octopus.heating_optimizer import (
     find_cheapest_windows,
     find_default_config,
     load_config,
+    parse_low_price_threshold,
+    parse_high_price_threshold,
     parse_quiet_window,
     parse_tg_active_period,
     run_daily_cycle,
@@ -253,7 +255,7 @@ class TestPriceAnalysis:
             45.5
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold=0.75, high_price_threshold=1.33)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold_pct=0.75, high_price_threshold_pct=1.33)
 
         # 45.5 > max(15.0, 14.0) * 1.33 = 19.95, so should be HIGH
         assert category == PriceCategory.HIGH
@@ -266,7 +268,7 @@ class TestPriceAnalysis:
             5.3
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold=0.75, high_price_threshold=1.33)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold_pct=0.75, high_price_threshold_pct=1.33)
 
         assert category == PriceCategory.LOW
 
@@ -278,7 +280,7 @@ class TestPriceAnalysis:
             14.5  # Between avg and high threshold
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold=0.75, high_price_threshold=1.33)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold_pct=0.75, high_price_threshold_pct=1.33)
 
         assert category == PriceCategory.AVERAGE
 
@@ -290,7 +292,7 @@ class TestPriceAnalysis:
             20.3
         )
 
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold=0.75, high_price_threshold=1.33)
+        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold_pct=0.75, high_price_threshold_pct=1.33)
 
         assert category == PriceCategory.HIGH
 
@@ -1825,6 +1827,145 @@ class TestTGActivePeriod:
         start, end, _ = windows[0]
         assert start.astimezone().hour == 2 and start.astimezone().minute == 0
         assert end.astimezone().hour == 4 and end.astimezone().minute == 0
+
+
+class TestPriceThresholdParsing:
+    """Test parsing of price thresholds with '%' and 'p' suffixes."""
+
+    def test_parse_low_price_threshold_percentage(self) -> None:
+        """Test parsing percentage threshold."""
+        pct, abs_val = parse_low_price_threshold("75%")
+        assert pct == 0.75
+        assert abs_val is None
+
+    def test_parse_low_price_threshold_absolute(self) -> None:
+        """Test parsing absolute pence threshold."""
+        pct, abs_val = parse_low_price_threshold("15p")
+        assert pct is None
+        assert abs_val == 15.0
+
+    def test_parse_high_price_threshold_percentage(self) -> None:
+        """Test parsing percentage threshold."""
+        pct, abs_val = parse_high_price_threshold("133%")
+        assert pct == 1.33
+        assert abs_val is None
+
+    def test_parse_high_price_threshold_absolute(self) -> None:
+        """Test parsing absolute pence threshold."""
+        pct, abs_val = parse_high_price_threshold("25p")
+        assert pct is None
+        assert abs_val == 25.0
+
+    def test_parse_threshold_decimal_percentage(self) -> None:
+        """Test parsing decimal percentage."""
+        pct, abs_val = parse_low_price_threshold("82.5%")
+        assert pct == 0.825
+        assert abs_val is None
+
+    def test_parse_threshold_decimal_absolute(self) -> None:
+        """Test parsing decimal pence value."""
+        pct, abs_val = parse_low_price_threshold("12.5p")
+        assert pct is None
+        assert abs_val == 12.5
+
+    def test_parse_threshold_whitespace(self) -> None:
+        """Test parsing with whitespace."""
+        pct, abs_val = parse_low_price_threshold("  75%  ")
+        assert pct == 0.75
+        assert abs_val is None
+
+    def test_parse_threshold_invalid_no_suffix(self) -> None:
+        """Test that missing suffix raises error."""
+        with pytest.raises(ValueError) as exc_info:
+            parse_low_price_threshold("75")
+        assert "Must end with '%' (percentage) or 'p' (pence)" in str(exc_info.value)
+
+    def test_parse_threshold_invalid_suffix(self) -> None:
+        """Test that invalid suffix raises error."""
+        with pytest.raises(ValueError) as exc_info:
+            parse_low_price_threshold("75x")
+        assert "Must end with '%' (percentage) or 'p' (pence)" in str(exc_info.value)
+
+    def test_parse_threshold_invalid_number(self) -> None:
+        """Test that invalid number raises error."""
+        with pytest.raises(ValueError) as exc_info:
+            parse_low_price_threshold("abc%")
+        assert "Invalid" in str(exc_info.value)
+
+    def test_classify_price_with_absolute_low_threshold(self) -> None:
+        """Test price classification with absolute low threshold."""
+        # Create a price point at 10p
+        price = create_price_point(
+            '2024-12-08T10:00:00Z',
+            '2024-12-08T10:30:00Z',
+            10.0
+        )
+
+        # Daily avg: 20p, Weekly avg: 18p
+        # Low threshold: 12p (absolute)
+        # High threshold: 130% of 20p = 26p
+        category = classify_price(
+            price,
+            daily_avg=20.0,
+            weekly_avg=18.0,
+            low_price_threshold_pct=None,
+            low_price_threshold_abs=12.0,
+            high_price_threshold_pct=1.30,
+            high_price_threshold_abs=None
+        )
+
+        # 10p < 12p, so should be LOW
+        assert category == PriceCategory.LOW
+
+    def test_classify_price_with_absolute_high_threshold(self) -> None:
+        """Test price classification with absolute high threshold."""
+        # Create a price point at 30p
+        price = create_price_point(
+            '2024-12-08T10:00:00Z',
+            '2024-12-08T10:30:00Z',
+            30.0
+        )
+
+        # Daily avg: 20p, Weekly avg: 18p
+        # Low threshold: 75% of 18p = 13.5p
+        # High threshold: 25p (absolute)
+        category = classify_price(
+            price,
+            daily_avg=20.0,
+            weekly_avg=18.0,
+            low_price_threshold_pct=0.75,
+            low_price_threshold_abs=None,
+            high_price_threshold_pct=None,
+            high_price_threshold_abs=25.0
+        )
+
+        # 30p > 25p, so should be HIGH
+        assert category == PriceCategory.HIGH
+
+    def test_classify_price_with_both_absolute_thresholds(self) -> None:
+        """Test price classification with both absolute thresholds."""
+        # Create a price point at 18p
+        price = create_price_point(
+            '2024-12-08T10:00:00Z',
+            '2024-12-08T10:30:00Z',
+            18.0
+        )
+
+        # Daily avg: 20p, Weekly avg: 22p (ignored for absolute thresholds)
+        # Low threshold: 15p (absolute)
+        # High threshold: 25p (absolute)
+        category = classify_price(
+            price,
+            daily_avg=20.0,
+            weekly_avg=22.0,
+            low_price_threshold_pct=None,
+            low_price_threshold_abs=15.0,
+            high_price_threshold_pct=None,
+            high_price_threshold_abs=25.0
+        )
+
+        # 15p < 18p < 25p, so should be AVERAGE
+        assert category == PriceCategory.AVERAGE
 
 
 if __name__ == "__main__":

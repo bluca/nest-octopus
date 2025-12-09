@@ -127,6 +127,73 @@ def parse_tg_active_period(value: str) -> Tuple[int, int, int, int]:
     return parse_time_range(value, "TG active period")
 
 
+def parse_price_threshold(value: str, param_name: str = "price threshold") -> Tuple[Optional[float], Optional[float]]:
+    """
+    Parse price threshold with '%' (percentage) or 'p' (pence) suffix.
+
+    Args:
+        value: String with number followed by '%' or 'p' (e.g., "75%", "15p")
+        param_name: Name of parameter for error messages
+
+    Returns:
+        Tuple of (percentage_value, absolute_value) where one is set and the other is None
+        percentage_value: Multiplier (e.g., 0.75 for 75%)
+        absolute_value: Price in pence (e.g., 15.0 for 15p)
+
+    Raises:
+        ValueError: If format is invalid
+    """
+    value = value.strip()
+
+    if value.endswith('%'):
+        try:
+            number = float(value[:-1])
+            # Convert percentage to multiplier (e.g., 75% -> 0.75)
+            return (number / 100.0, None)
+        except ValueError:
+            raise ValueError(f"Invalid {param_name} format: '{value}'. Expected number before '%'")
+    elif value.endswith('p'):
+        try:
+            number = float(value[:-1])
+            if number < 0:
+                raise ValueError(f"{param_name} must be non-negative")
+            return (None, number)
+        except ValueError:
+            raise ValueError(f"Invalid {param_name} format: '{value}'. Expected number before 'p'")
+    else:
+        raise ValueError(
+            f"Invalid {param_name} format: '{value}'. "
+            f"Must end with '%' (percentage) or 'p' (pence). "
+            f"Examples: '75%', '15p'"
+        )
+
+
+def parse_low_price_threshold(value: str) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Parse low price threshold with '%' or 'p' suffix.
+
+    Args:
+        value: String with number followed by '%' or 'p' (e.g., "75%", "15p")
+
+    Returns:
+        Tuple of (percentage_value, absolute_value)
+    """
+    return parse_price_threshold(value, "low price threshold")
+
+
+def parse_high_price_threshold(value: str) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Parse high price threshold with '%' or 'p' suffix.
+
+    Args:
+        value: String with number followed by '%' or 'p' (e.g., "133%", "25p")
+
+    Returns:
+        Tuple of (percentage_value, absolute_value)
+    """
+    return parse_price_threshold(value, "high price threshold")
+
+
 @dataclass
 class Config:
     """Application configuration."""
@@ -146,8 +213,10 @@ class Config:
     # Heating preferences
     low_price_temp: float = 20.0
     average_price_temp: float = 17.0
-    low_price_threshold: float = 0.75
-    high_price_threshold: float = 1.33
+    low_price_threshold_pct: Optional[float] = 0.75  # Percentage multiplier (e.g., 0.75 for 75%)
+    low_price_threshold_abs: Optional[float] = None  # Absolute price in pence (e.g., 15.0 for 15p)
+    high_price_threshold_pct: Optional[float] = 1.33  # Percentage multiplier (e.g., 1.33 for 133%)
+    high_price_threshold_abs: Optional[float] = None  # Absolute price in pence (e.g., 25.0 for 25p)
     quiet_window: Optional[Tuple[int, int, int, int]] = None  # (start_hour, start_min, end_hour, end_min)
 
     # Optional TG SupplyMaster settings
@@ -270,7 +339,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
     if not os.path.exists(config_path):
         raise ConfigurationError(f"Configuration file not found: {config_path}")
 
-    parser = configparser.ConfigParser()
+    parser = configparser.ConfigParser(interpolation=None)
     parser.read(config_path)
 
     # Get credentials directory from environment
@@ -379,9 +448,11 @@ def load_config(config_path: Optional[str] = None) -> Config:
         if parser.has_option('heating', 'average_price_temp'):
             config.average_price_temp = parser.getfloat('heating', 'average_price_temp')
         if parser.has_option('heating', 'low_price_threshold'):
-            config.low_price_threshold = parser.getfloat('heating', 'low_price_threshold')
+            threshold_str = parser.get('heating', 'low_price_threshold')
+            config.low_price_threshold_pct, config.low_price_threshold_abs = parse_low_price_threshold(threshold_str)
         if parser.has_option('heating', 'high_price_threshold'):
-            config.high_price_threshold = parser.getfloat('heating', 'high_price_threshold')
+            threshold_str = parser.get('heating', 'high_price_threshold')
+            config.high_price_threshold_pct, config.high_price_threshold_abs = parse_high_price_threshold(threshold_str)
         if parser.has_option('heating', 'quiet_window'):
             config.quiet_window = parse_quiet_window(parser.get('heating', 'quiet_window'))
 
@@ -414,10 +485,10 @@ def apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.tariff_code = args.tariff_code
 
     if args.low_price_threshold is not None:
-        config.low_price_threshold = args.low_price_threshold
+        config.low_price_threshold_pct, config.low_price_threshold_abs = args.low_price_threshold
 
     if args.high_price_threshold is not None:
-        config.high_price_threshold = args.high_price_threshold
+        config.high_price_threshold_pct, config.high_price_threshold_abs = args.high_price_threshold
 
     if args.low_price_temp is not None:
         config.low_price_temp = args.low_price_temp
@@ -517,8 +588,10 @@ def classify_price(
     price: PricePoint,
     daily_avg: float,
     weekly_avg: float,
-    low_price_threshold: float,
-    high_price_threshold: float
+    low_price_threshold_pct: Optional[float] = None,
+    low_price_threshold_abs: Optional[float] = None,
+    high_price_threshold_pct: Optional[float] = None,
+    high_price_threshold_abs: Optional[float] = None
 ) -> str:
     """
     Classify a price point as LOW, AVERAGE, or HIGH.
@@ -527,19 +600,35 @@ def classify_price(
         price: Price point to classify
         daily_avg: Average price for the day
         weekly_avg: Average price for the week
-        low_price_threshold: Multiplier for low price threshold
-        high_price_threshold: Multiplier for high price threshold
+        low_price_threshold_pct: Percentage multiplier for low threshold (e.g., 0.75)
+        low_price_threshold_abs: Absolute price in pence for low threshold (e.g., 15.0)
+        high_price_threshold_pct: Percentage multiplier for high threshold (e.g., 1.33)
+        high_price_threshold_abs: Absolute price in pence for high threshold (e.g., 25.0)
 
     Returns:
         Price category (LOW, AVERAGE, or HIGH)
     """
     # Calculate threshold for LOW prices
-    # LOW: below both daily and weekly averages
-    avg_threshold = min(daily_avg, weekly_avg) * low_price_threshold
+    if low_price_threshold_abs is not None:
+        # Absolute threshold in pence
+        avg_threshold = low_price_threshold_abs
+    elif low_price_threshold_pct is not None:
+        # Percentage: LOW below both daily and weekly averages
+        avg_threshold = min(daily_avg, weekly_avg) * low_price_threshold_pct
+    else:
+        # Default to 75%
+        avg_threshold = min(daily_avg, weekly_avg) * 0.75
 
     # Calculate threshold for HIGH prices
-    # HIGH: significantly above both averages
-    high_threshold = max(daily_avg, weekly_avg) * high_price_threshold
+    if high_price_threshold_abs is not None:
+        # Absolute threshold in pence
+        high_threshold = high_price_threshold_abs
+    elif high_price_threshold_pct is not None:
+        # Percentage: HIGH significantly above both averages
+        high_threshold = max(daily_avg, weekly_avg) * high_price_threshold_pct
+    else:
+        # Default to 133%
+        high_threshold = max(daily_avg, weekly_avg) * 1.33
 
     if price.value_inc_vat < avg_threshold:
         return PriceCategory.LOW
@@ -595,7 +684,9 @@ def calculate_heating_schedule(
 
     # Classify each price point (prices are already sorted chronologically)
     classified = [
-        (p, classify_price(p, daily_avg, weekly_avg, config.low_price_threshold, config.high_price_threshold))
+        (p, classify_price(p, daily_avg, weekly_avg,
+                          config.low_price_threshold_pct, config.low_price_threshold_abs,
+                          config.high_price_threshold_pct, config.high_price_threshold_abs))
         for p in prices
     ]
 
@@ -1498,15 +1589,15 @@ async def async_main() -> int:
     )
     parser.add_argument(
         '--low-price-threshold',
-        type=float,
+        type=parse_low_price_threshold,
         default=None,
-        help='Low price threshold multiplier (default: 0.75)'
+        help='Low price threshold with suffix: use %% for percentage (e.g., "75%%") or p for absolute pence (e.g., "15p"). Default: 75%%'
     )
     parser.add_argument(
         '--high-price-threshold',
-        type=float,
+        type=parse_high_price_threshold,
         default=None,
-        help='High price threshold multiplier (default: 1.33)'
+        help='High price threshold with suffix: use %% for percentage (e.g., "133%%") or p for absolute pence (e.g., "25p"). Default: 133%%'
     )
     parser.add_argument(
         '--low-price-temp',
@@ -1591,10 +1682,23 @@ async def async_main() -> int:
     if args.dry_run and args.tariff_code:
         # Dry-run mode with tariff-code: create minimal config
         logger.debug("Dry-run mode with --tariff-code, skipping config file")
+        # Handle threshold arguments (tuples of percentage, absolute)
+        if args.low_price_threshold is not None:
+            low_pct, low_abs = args.low_price_threshold
+        else:
+            low_pct, low_abs = 0.75, None
+
+        if args.high_price_threshold is not None:
+            high_pct, high_abs = args.high_price_threshold
+        else:
+            high_pct, high_abs = 1.33, None
+
         config = Config(
             tariff_code=args.tariff_code,
-            low_price_threshold=args.low_price_threshold if args.low_price_threshold is not None else 0.75,
-            high_price_threshold=args.high_price_threshold if args.high_price_threshold is not None else 1.33,
+            low_price_threshold_pct=low_pct,
+            low_price_threshold_abs=low_abs,
+            high_price_threshold_pct=high_pct,
+            high_price_threshold_abs=high_abs,
             low_price_temp=args.low_price_temp if args.low_price_temp is not None else 20.0,
             average_price_temp=args.average_price_temp if args.average_price_temp is not None else 17.0,
             thermostat_name="",
