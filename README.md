@@ -7,7 +7,7 @@ Boilerplate and unit tests written with Copilot, as life is short. Don't @ me.
 ## Overview
 
 The heating optimizer automatically:
-1. Fetches electricity prices daily at 8pm for the next 24 hours
+1. Fetches electricity prices daily at 10pm for the next 24 hours
 2. Analyzes prices against daily and weekly averages
 3. Calculates optimal heating schedule based on price thresholds
 4. Executes temperature and ECO mode changes at calculated times
@@ -20,7 +20,7 @@ The heating optimizer automatically:
 - **Dynamic price-based optimization**: Heats during cheap periods, reduces heating during expensive periods
 - **Multi-threshold classification**: LOW/AVERAGE/HIGH price periods with configurable thresholds
 - **Quiet window support**: Prevents temperature changes during sleep hours while still allowing ECO mode
-- **Daily automation**: Automatic daily updates at 8pm with systemd integration
+- **Daily automation**: Automatic daily updates at 10pm with systemd integration
 
 ### Device Integration
 - **Google Nest Thermostat**: Full control via official Google SDM API
@@ -48,7 +48,7 @@ The heating optimizer automatically:
 
 7. **Execute actions**: Applies each action at its scheduled time
 8. **Sleep until next**: Waits for next scheduled change
-9. **Daily refresh**: At 8pm, fetches new prices and recalculates schedule
+9. **Daily refresh**: At 10pm, fetches new prices and recalculates schedule
 
 ## Project Structure
 

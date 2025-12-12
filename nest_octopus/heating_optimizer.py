@@ -2,17 +2,17 @@
 """
 Heating Optimization Daemon
 
-Queries electricity prices daily at 8pm and optimizes heating schedule to minimize costs
+Queries electricity prices daily at 10pm and optimizes heating schedule to minimize costs
 while maintaining comfort. Uses dynamic pricing to determine when to heat (22°C),
 maintain comfort (17°C), or enable ECO mode during high prices.
 
 The daemon:
-1. Fetches electricity prices for the next 24 hours at 8pm
+1. Fetches electricity prices for the next 24 hours at 10pm
 2. Analyzes prices against daily and weekly averages
 3. Calculates optimal heating schedule
 4. Executes temperature/mode changes at calculated times
 5. Sleeps between changes until next action
-6. Repeats cycle daily at 8pm
+6. Repeats cycle daily at 10pm
 """
 
 import argparse
@@ -656,7 +656,7 @@ def calculate_heating_schedule(
         prices: Price points for next 24 hours
         weekly_prices: Price points for preceding week
         config: Application configuration
-        start_time: When the schedule starts (typically 8pm)
+        start_time: When the schedule starts (typically 10pm)
 
     Returns:
         List of HeatingAction objects in chronological order
@@ -1557,7 +1557,7 @@ async def async_main() -> int:
     """
     Main daemon loop (async).
 
-    Runs continuously, executing optimization cycle at 8pm each day.
+    Runs continuously, executing optimization cycle at 10pm each day.
     Handles signals:
     - SIGINT/SIGTERM: Graceful shutdown
     - SIGHUP: Reload configuration
@@ -1756,18 +1756,18 @@ async def async_main() -> int:
     loop = asyncio.get_running_loop()
 
     def schedule_next_cycle() -> None:
-        """Schedule the next daily cycle at 8pm local time."""
+        """Schedule the next daily cycle at 10pm local time."""
         nonlocal next_cycle_handle
 
-        # Calculate next 8pm in local time, then convert to UTC for calculation
+        # Calculate next 10pm in local time, then convert to UTC for calculation
         now_local = datetime.now().astimezone()
         now_utc = datetime.now(timezone.utc)
 
-        # Find next 8pm in local time
-        next_run_local = now_local.replace(hour=20, minute=0, second=0, microsecond=0)
+        # Find next 10pm in local time
+        next_run_local = now_local.replace(hour=22, minute=0, second=0, microsecond=0)
 
-        # If it's already past 8pm, schedule for tomorrow
-        if now_local.hour >= 20:
+        # If it's already past 10pm, schedule for tomorrow
+        if now_local.hour >= 22:
             next_run_local += timedelta(days=1)
 
         # Convert to UTC for the actual delay calculation
