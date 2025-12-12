@@ -1,0 +1,10 @@
+rebuild:
+  steps:
+    - trigger_services:
+        project: home:bluca:octpus
+        package: nest-octopus
+  filters:
+    event: push
+    branches:
+      only:
+        - main
