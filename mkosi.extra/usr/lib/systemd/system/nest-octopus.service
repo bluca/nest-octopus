@@ -2,6 +2,7 @@
 Description=Nest Octopus Heating Optimizer Service
 After=network-online.target
 Wants=network-online.target
+OnFailure=nest-octopus-fail.service
 
 [Service]
 Type=notify-reload

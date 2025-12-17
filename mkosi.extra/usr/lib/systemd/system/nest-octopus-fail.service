@@ -1,0 +1,9 @@
+[Unit]
+Description=Nest Octopus Heating Optimizer Failure Notification
+ConditionPathExists=/etc/nest-octopus/notify.conf
+RefuseManualStart=yes
+
+[Service]
+EnvironmentFile=/etc/nest-octopus/notify.conf
+Type=oneshot
+ExecStart=/usr/bin/curl -H "Title: Nest Octopus Service Failure" -H "Tags: warning" -d "The Nest Octopus service has failed. SERVICE_RESULT=${MONITOR_SERVICE_RESULT} EXIT_CODE=${MONITOR_EXIT_CODE} EXIT_STATUS=${MONITOR_EXIT_STATUS}" ${NEST_OCTOPUS_NOTIFY_URL}
