@@ -25,7 +25,7 @@ import signal
 import socket
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
@@ -49,7 +49,81 @@ class ConfigurationError(Exception):
     pass
 
 
-def parse_time_range(value: str, param_name: str = "time range") -> Tuple[int, int, int, int]:
+@dataclass(frozen=True)
+class TimeRange:
+    """
+    Represents a time range within a day.
+
+    Supports ranges that cross midnight (e.g., 23:00-07:00).
+    Uses Python's standard library datetime.time for type safety.
+    """
+    start: dt_time
+    end: dt_time
+
+    def contains(self, t: dt_time) -> bool:
+        """
+        Check if a time falls within this range.
+
+        Handles ranges that cross midnight correctly.
+        Note: The end time is exclusive.
+
+        Args:
+            t: The time to check
+
+        Returns:
+            True if the time is within the range, False otherwise
+        """
+        # Convert to minutes for comparison
+        t_minutes = t.hour * 60 + t.minute
+        start_minutes = self.start.hour * 60 + self.start.minute
+        end_minutes = self.end.hour * 60 + self.end.minute
+
+        if start_minutes <= end_minutes:
+            # Normal range (e.g., 09:00-17:00)
+            return start_minutes <= t_minutes < end_minutes
+        else:
+            # Range crosses midnight (e.g., 23:00-07:00)
+            return t_minutes >= start_minutes or t_minutes < end_minutes
+
+    def contains_window(self, window_start: dt_time, window_end: dt_time) -> bool:
+        """
+        Check if a time window is fully contained within this range.
+
+        This is used for checking if a scheduled window fits within an active period.
+        The window_end is treated as inclusive (i.e., a window ending exactly at
+        the active period end time is allowed).
+
+        Args:
+            window_start: Start time of the window to check
+            window_end: End time of the window to check
+
+        Returns:
+            True if the entire window is within this range, False otherwise
+        """
+        window_start_minutes = window_start.hour * 60 + window_start.minute
+        window_end_minutes = window_end.hour * 60 + window_end.minute
+        start_minutes = self.start.hour * 60 + self.start.minute
+        end_minutes = self.end.hour * 60 + self.end.minute
+
+        if end_minutes < start_minutes:
+            # Period crosses midnight (e.g., 22:00-06:00)
+            start_in_period = (window_start_minutes >= start_minutes or
+                              window_start_minutes < end_minutes)
+            end_in_period = (window_end_minutes >= start_minutes or
+                            window_end_minutes <= end_minutes)
+            return start_in_period and end_in_period
+        else:
+            # Normal period (e.g., 05:00-20:00)
+            start_in_period = (start_minutes <= window_start_minutes < end_minutes)
+            end_in_period = (start_minutes < window_end_minutes <= end_minutes)
+            return start_in_period and end_in_period
+
+    def __str__(self) -> str:
+        """Return string representation in hh:mm-hh:mm format."""
+        return f"{self.start.strftime('%H:%M')}-{self.end.strftime('%H:%M')}"
+
+
+def parse_time_range(value: str, param_name: str = "time range") -> TimeRange:
     """
     Parse time range from format hh:mm-hh:mm.
 
@@ -58,7 +132,7 @@ def parse_time_range(value: str, param_name: str = "time range") -> Tuple[int, i
         param_name: Name of parameter for error messages
 
     Returns:
-        Tuple of (start_hour, start_min, end_hour, end_min)
+        TimeRange object with start and end times
 
     Raises:
         ValueError: If format is invalid
@@ -89,13 +163,13 @@ def parse_time_range(value: str, param_name: str = "time range") -> Tuple[int, i
         if not (0 <= end_min <= 59):
             raise ValueError(f"End minute must be 0-59, got {end_min}")
 
-        return (start_hour, start_min, end_hour, end_min)
+        return TimeRange(dt_time(start_hour, start_min), dt_time(end_hour, end_min))
 
     except (ValueError, IndexError) as e:
         raise ValueError(f"Invalid {param_name} format: '{value}'. {e}")
 
 
-def parse_quiet_window(value: str) -> Tuple[int, int, int, int]:
+def parse_quiet_window(value: str) -> TimeRange:
     """
     Parse quiet window time range from format hh:mm-hh:mm.
 
@@ -103,7 +177,7 @@ def parse_quiet_window(value: str) -> Tuple[int, int, int, int]:
         value: String in format "hh:mm-hh:mm" (e.g., "23:00-07:00")
 
     Returns:
-        Tuple of (start_hour, start_min, end_hour, end_min)
+        TimeRange object
 
     Raises:
         ValueError: If format is invalid
@@ -111,7 +185,7 @@ def parse_quiet_window(value: str) -> Tuple[int, int, int, int]:
     return parse_time_range(value, "quiet window")
 
 
-def parse_tg_active_period(value: str) -> Tuple[int, int, int, int]:
+def parse_tg_active_period(value: str) -> TimeRange:
     """
     Parse TG active period time range from format hh:mm-hh:mm.
 
@@ -119,7 +193,7 @@ def parse_tg_active_period(value: str) -> Tuple[int, int, int, int]:
         value: String in format "hh:mm-hh:mm" (e.g., "04:00-20:00")
 
     Returns:
-        Tuple of (start_hour, start_min, end_hour, end_min)
+        TimeRange object
 
     Raises:
         ValueError: If format is invalid
@@ -127,7 +201,7 @@ def parse_tg_active_period(value: str) -> Tuple[int, int, int, int]:
     return parse_time_range(value, "TG active period")
 
 
-def parse_cycle_time(value: str) -> Tuple[int, int]:
+def parse_cycle_time(value: str) -> dt_time:
     """
     Parse cycle time from format hh:mm.
 
@@ -135,7 +209,7 @@ def parse_cycle_time(value: str) -> Tuple[int, int]:
         value: String in format "hh:mm" (e.g., "21:50")
 
     Returns:
-        Tuple of (hour, minute)
+        datetime.time object
 
     Raises:
         ValueError: If format is invalid
@@ -161,7 +235,7 @@ def parse_cycle_time(value: str) -> Tuple[int, int]:
         if not (0 <= minute <= 59):
             raise ValueError(f"Minute must be 0-59, got {minute}")
 
-        return (hour, minute)
+        return dt_time(hour, minute)
 
     except (ValueError, IndexError) as e:
         if "Hour must be" in str(e) or "Minute must be" in str(e):
@@ -280,7 +354,7 @@ class Config:
     default_temp: float = 17.0  # Default temperature when no tier matches
     eco_threshold_pct: Optional[float] = 1.33  # Percentage threshold for ECO mode
     eco_threshold_abs: Optional[float] = None  # Absolute price threshold for ECO mode
-    quiet_window: Optional[Tuple[int, int, int, int]] = None  # (start_hour, start_min, end_hour, end_min)
+    quiet_window: Optional[TimeRange] = None  # Time range to avoid temperature changes
 
     # Optional TG SupplyMaster settings
     tg_username: Optional[str] = None
@@ -289,13 +363,13 @@ class Config:
     tg_window_hours: int = 2  # Duration of each window
     tg_num_windows: int = 2  # Number of windows per day
     tg_min_gap_hours: int = 10  # Minimum gap between windows
-    tg_active_period: Optional[Tuple[int, int, int, int]] = None  # (start_hour, start_min, end_hour, end_min)
+    tg_active_period: Optional[TimeRange] = None  # Time range to restrict windows
 
     # Logging
     logging_level: str = 'WARNING'  # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 
     # Daily cycle time
-    cycle_time: Tuple[int, int] = (21, 50)  # (hour, minute) for daily cycle in local time
+    cycle_time: dt_time = field(default_factory=lambda: dt_time(21, 50))  # Time for daily cycle
 
 
 @dataclass
@@ -883,7 +957,6 @@ def calculate_heating_schedule(
 
     # Filter out actions in quiet window if configured
     if config.quiet_window:
-        start_hour, start_min, end_hour, end_min = config.quiet_window
         filtered_actions = []
 
         for action in actions:
@@ -892,21 +965,9 @@ def calculate_heating_schedule(
             if local_time.tzinfo is not None:
                 local_time = local_time.astimezone()
 
-            action_hour = local_time.hour
-            action_min = local_time.minute
-            action_minutes = action_hour * 60 + action_min
-            start_minutes = start_hour * 60 + start_min
-            end_minutes = end_hour * 60 + end_min
-
             # Check if action falls within quiet window
-            # Handle window that crosses midnight
-            in_quiet_window = False
-            if start_minutes <= end_minutes:
-                # Normal window (e.g., 09:00-17:00)
-                in_quiet_window = start_minutes <= action_minutes < end_minutes
-            else:
-                # Window crosses midnight (e.g., 23:00-07:00)
-                in_quiet_window = action_minutes >= start_minutes or action_minutes < end_minutes
+            action_time = dt_time(local_time.hour, local_time.minute)
+            in_quiet_window = config.quiet_window.contains(action_time)
 
             # Only filter temperature-setting actions during quiet window
             # ECO mode changes are allowed to prevent wasting energy
@@ -982,7 +1043,7 @@ def find_cheapest_windows(
     window_hours: int = 2,
     num_windows: int = 2,
     min_gap_hours: int = 10,
-    active_period: Optional[Tuple[int, int, int, int]] = None
+    active_period: Optional[TimeRange] = None
 ) -> List[Tuple[datetime, datetime, float]]:
     """
     Find the cheapest time windows for running a device.
@@ -992,7 +1053,7 @@ def find_cheapest_windows(
         window_hours: Duration of each window in hours
         num_windows: Number of windows to find
         min_gap_hours: Minimum gap between windows in hours
-        active_period: Optional (start_hour, start_min, end_hour, end_min) to restrict windows
+        active_period: Optional TimeRange to restrict windows
 
     Returns:
         List of tuples (start_time, end_time, avg_price) sorted by start time
@@ -1040,31 +1101,16 @@ def find_cheapest_windows(
 
         # Check if window is within active period (if configured)
         if active_period is not None:
-            start_hour, start_min, end_hour, end_min = active_period
-
             # Convert window times to local time for comparison (uses system local timezone)
             window_start_local = start_time.astimezone()
             window_end_local = end_time.astimezone()
 
             # Check if BOTH window start AND end are within active period
-            window_start_minutes = window_start_local.hour * 60 + window_start_local.minute
-            window_end_minutes = window_end_local.hour * 60 + window_end_local.minute
-            active_start_minutes = start_hour * 60 + start_min
-            active_end_minutes = end_hour * 60 + end_min
+            start_time_only = dt_time(window_start_local.hour, window_start_local.minute)
+            end_time_only = dt_time(window_end_local.hour, window_end_local.minute)
 
-            # Handle period crossing midnight
-            if active_end_minutes < active_start_minutes:
-                # Period crosses midnight (e.g., 20:00-04:00)
-                start_in_period = (window_start_minutes >= active_start_minutes or
-                                  window_start_minutes < active_end_minutes)
-                end_in_period = (window_end_minutes >= active_start_minutes or
-                                window_end_minutes < active_end_minutes)
-                in_active_period = start_in_period and end_in_period
-            else:
-                # Normal period (e.g., 04:00-20:00)
-                start_in_period = (active_start_minutes <= window_start_minutes < active_end_minutes)
-                end_in_period = (active_start_minutes < window_end_minutes <= active_end_minutes)
-                in_active_period = start_in_period and end_in_period
+            # Use contains_window which has inclusive end semantics
+            in_active_period = active_period.contains_window(start_time_only, end_time_only)
 
             if not in_active_period:
                 continue  # Skip this window
@@ -1586,8 +1632,7 @@ def run_dry_run(config: Config) -> int:
                 print(f"    Tier {i}: {tier.temperature}°C @ {threshold_str}")
             print(f"  Default Temp:    {config.default_temp}°C")
             if config.quiet_window:
-                start_h, start_m, end_h, end_m = config.quiet_window
-                print(f"  Quiet Window:    {start_h:02d}:{start_m:02d}-{end_h:02d}:{end_m:02d}")
+                print(f"  Quiet Window:    {config.quiet_window}")
 
             # Print price graph
             print_price_graph(daily_prices)
@@ -1869,7 +1914,7 @@ async def async_main() -> int:
             tg_active_period=args.tg_active_period,
             quiet_window=args.quiet_window,
             logging_level=args.log_level.upper() if args.log_level is not None else 'WARNING',
-            cycle_time=args.cycle_time if args.cycle_time is not None else (21, 50),
+            cycle_time=args.cycle_time if args.cycle_time is not None else dt_time(21, 50),
         )
 
         # Apply eco threshold if provided
@@ -1928,14 +1973,17 @@ async def async_main() -> int:
         # Ensure config is not None
         assert config is not None, "Config must be loaded before scheduling cycle"
 
-        cycle_hour, cycle_minute = config.cycle_time
-
         # Calculate next cycle time in local time, then convert to UTC for calculation
         now_local = datetime.now().astimezone()
         now_utc = datetime.now(timezone.utc)
 
         # Find next cycle time in local time
-        next_run_local = now_local.replace(hour=cycle_hour, minute=cycle_minute, second=0, microsecond=0)
+        next_run_local = now_local.replace(
+            hour=config.cycle_time.hour,
+            minute=config.cycle_time.minute,
+            second=0,
+            microsecond=0
+        )
 
         # If it's already past the cycle time, schedule for tomorrow
         if now_local >= next_run_local:

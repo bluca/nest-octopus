@@ -12,7 +12,7 @@ import os
 import signal
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, List
 from unittest.mock import Mock, patch, MagicMock
@@ -24,6 +24,7 @@ from nest_octopus.heating_optimizer import (
     ConfigurationError,
     HeatingAction,
     TemperatureTier,
+    TimeRange,
     calculate_heating_schedule,
     calculate_price_statistics,
     determine_target_temperature,
@@ -1302,28 +1303,71 @@ default_temp = invalid
                 load_config(str(config_file))
 
 
+class TestTimeRange:
+    """Tests for the TimeRange dataclass."""
+
+    def test_timerange_contains_normal_range(self) -> None:
+        """Test contains() for a normal range (not crossing midnight)."""
+        tr = TimeRange(dt_time(9, 0), dt_time(17, 0))
+        assert tr.contains(dt_time(9, 0)) is True  # Start is inclusive
+        assert tr.contains(dt_time(12, 0)) is True
+        assert tr.contains(dt_time(16, 59)) is True
+        assert tr.contains(dt_time(17, 0)) is False  # End is exclusive
+        assert tr.contains(dt_time(8, 59)) is False
+        assert tr.contains(dt_time(18, 0)) is False
+
+    def test_timerange_contains_midnight_crossing(self) -> None:
+        """Test contains() for a range that crosses midnight."""
+        tr = TimeRange(dt_time(23, 0), dt_time(7, 0))
+        assert tr.contains(dt_time(23, 0)) is True
+        assert tr.contains(dt_time(0, 0)) is True
+        assert tr.contains(dt_time(6, 59)) is True
+        assert tr.contains(dt_time(7, 0)) is False  # End is exclusive
+        assert tr.contains(dt_time(22, 59)) is False
+        assert tr.contains(dt_time(12, 0)) is False
+
+    def test_timerange_str(self) -> None:
+        """Test string representation."""
+        tr = TimeRange(dt_time(9, 30), dt_time(17, 45))
+        assert str(tr) == "09:30-17:45"
+
+    def test_timerange_equality(self) -> None:
+        """Test equality comparison."""
+        tr1 = TimeRange(dt_time(9, 0), dt_time(17, 0))
+        tr2 = TimeRange(dt_time(9, 0), dt_time(17, 0))
+        tr3 = TimeRange(dt_time(10, 0), dt_time(17, 0))
+        assert tr1 == tr2
+        assert tr1 != tr3
+
+    def test_timerange_frozen(self) -> None:
+        """Test that TimeRange is immutable (frozen dataclass)."""
+        tr = TimeRange(dt_time(9, 0), dt_time(17, 0))
+        with pytest.raises(AttributeError):
+            tr.start = dt_time(10, 0)  # type: ignore[misc]
+
+
 class TestQuietWindow:
     """Test quiet window functionality."""
 
     def test_parse_quiet_window_normal(self) -> None:
         """Test parsing a normal time range (not crossing midnight)."""
         result = parse_quiet_window("09:00-17:00")
-        assert result == (9, 0, 17, 0)
+        assert result == TimeRange(dt_time(9, 0), dt_time(17, 0))
 
     def test_parse_quiet_window_midnight_crossing(self) -> None:
         """Test parsing a time range that crosses midnight."""
         result = parse_quiet_window("23:00-07:00")
-        assert result == (23, 0, 7, 0)
+        assert result == TimeRange(dt_time(23, 0), dt_time(7, 0))
 
     def test_parse_quiet_window_with_minutes(self) -> None:
         """Test parsing a time range with minutes."""
         result = parse_quiet_window("22:30-06:45")
-        assert result == (22, 30, 6, 45)
+        assert result == TimeRange(dt_time(22, 30), dt_time(6, 45))
 
     def test_parse_quiet_window_spaces(self) -> None:
         """Test parsing with extra spaces."""
         result = parse_quiet_window("  09:00 - 17:00  ")
-        assert result == (9, 0, 17, 0)
+        assert result == TimeRange(dt_time(9, 0), dt_time(17, 0))
 
     def test_parse_quiet_window_invalid_format(self) -> None:
         """Test that invalid format raises ValueError."""
@@ -1380,7 +1424,7 @@ class TestQuietWindow:
             refresh_token='test',
             project_id='test',
             tariff_code='AGILE-TEST',
-            quiet_window=(9, 0, 17, 0)  # 09:00-17:00
+            quiet_window=TimeRange(dt_time(9, 0), dt_time(17, 0))  # 09:00-17:00
         )
 
         actions = calculate_heating_schedule(prices, weekly_prices, config, base_time)
@@ -1431,7 +1475,7 @@ class TestQuietWindow:
             refresh_token='test',
             project_id='test',
             tariff_code='AGILE-TEST',
-            quiet_window=(23, 0, 7, 0)  # 23:00-07:00 (crosses midnight)
+            quiet_window=TimeRange(dt_time(23, 0), dt_time(7, 0))  # 23:00-07:00 (crosses midnight)
         )
 
         actions = calculate_heating_schedule(prices, weekly_prices, config, base_time)
@@ -1494,7 +1538,7 @@ class TestQuietWindow:
             refresh_token='test',
             project_id='test',
             tariff_code='AGILE-TEST',
-            quiet_window=(23, 0, 7, 0),
+            quiet_window=TimeRange(dt_time(23, 0), dt_time(7, 0)),
             temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75, threshold_abs=None)],
             default_temp=17.0
         )
@@ -1545,7 +1589,7 @@ class TestQuietWindow:
             refresh_token='test',
             project_id='test',
             tariff_code='AGILE-TEST',
-            quiet_window=(23, 0, 7, 0)
+            quiet_window=TimeRange(dt_time(23, 0), dt_time(7, 0))
         )
 
         actions = calculate_heating_schedule(prices, weekly_prices, config, base_time)
@@ -1579,12 +1623,12 @@ class TestTGActivePeriod:
     def test_parse_tg_active_period_normal(self) -> None:
         """Test parsing normal active period."""
         result = parse_tg_active_period("05:00-20:00")
-        assert result == (5, 0, 20, 0)
+        assert result == TimeRange(dt_time(5, 0), dt_time(20, 0))
 
     def test_parse_tg_active_period_midnight_crossing(self) -> None:
         """Test parsing midnight-crossing active period."""
         result = parse_tg_active_period("22:00-06:00")
-        assert result == (22, 0, 6, 0)
+        assert result == TimeRange(dt_time(22, 0), dt_time(6, 0))
 
     def test_parse_tg_active_period_invalid(self) -> None:
         """Test that invalid format raises ValueError."""
@@ -1623,7 +1667,7 @@ class TestTGActivePeriod:
             window_hours=2,
             num_windows=2,
             min_gap_hours=4,
-            active_period=(5, 0, 20, 0)
+            active_period=TimeRange(dt_time(5, 0), dt_time(20, 0))
         )
 
         # Should find 2 windows
@@ -1673,7 +1717,7 @@ class TestTGActivePeriod:
             window_hours=2,
             num_windows=1,
             min_gap_hours=4,
-            active_period=(5, 0, 20, 0)
+            active_period=TimeRange(dt_time(5, 0), dt_time(20, 0))
         )
 
         # Should find 05:00-07:00, not 02:00-04:00
@@ -1712,7 +1756,7 @@ class TestTGActivePeriod:
             window_hours=2,
             num_windows=2,
             min_gap_hours=4,
-            active_period=(22, 0, 6, 0)  # Night only: 22:00-06:00
+            active_period=TimeRange(dt_time(22, 0), dt_time(6, 0))  # Night only: 22:00-06:00
         )
 
         # Should find 02:00-04:00 and/or 22:00-00:00
@@ -1775,27 +1819,27 @@ class TestCycleTime:
     def test_parse_cycle_time_normal(self) -> None:
         """Test parsing a normal time."""
         result = parse_cycle_time("21:50")
-        assert result == (21, 50)
+        assert result == dt_time(21, 50)
 
     def test_parse_cycle_time_midnight(self) -> None:
         """Test parsing midnight."""
         result = parse_cycle_time("00:00")
-        assert result == (0, 0)
+        assert result == dt_time(0, 0)
 
     def test_parse_cycle_time_end_of_day(self) -> None:
         """Test parsing end of day."""
         result = parse_cycle_time("23:59")
-        assert result == (23, 59)
+        assert result == dt_time(23, 59)
 
     def test_parse_cycle_time_with_spaces(self) -> None:
         """Test parsing with leading/trailing spaces."""
         result = parse_cycle_time("  14:30  ")
-        assert result == (14, 30)
+        assert result == dt_time(14, 30)
 
     def test_parse_cycle_time_single_digit_hour(self) -> None:
         """Test parsing with single digit hour."""
         result = parse_cycle_time("9:00")
-        assert result == (9, 0)
+        assert result == dt_time(9, 0)
 
     def test_parse_cycle_time_invalid_format_no_colon(self) -> None:
         """Test that missing colon raises ValueError."""
@@ -1836,7 +1880,7 @@ class TestCycleTime:
             refresh_token='test',
             project_id='test',
         )
-        assert config.cycle_time == (21, 50)
+        assert config.cycle_time == dt_time(21, 50)
 
     def test_config_custom_cycle_time(self) -> None:
         """Test that Config accepts custom cycle time."""
@@ -1846,9 +1890,9 @@ class TestCycleTime:
             client_secret='test',
             refresh_token='test',
             project_id='test',
-            cycle_time=(18, 30),
+            cycle_time=dt_time(18, 30),
         )
-        assert config.cycle_time == (18, 30)
+        assert config.cycle_time == dt_time(18, 30)
 
     def test_load_config_with_cycle_time(self, tmp_path: Any) -> None:
         """Test loading configuration with cycle_time setting."""
@@ -1874,7 +1918,7 @@ cycle_time = 20:00
         with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
             config = load_config(str(config_file))
 
-        assert config.cycle_time == (20, 0)
+        assert config.cycle_time == dt_time(20, 0)
 
     def test_load_config_without_cycle_time_uses_default(self, tmp_path: Any) -> None:
         """Test that missing cycle_time uses default 21:50."""
@@ -1897,7 +1941,7 @@ project_id = test-project-123
         with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
             config = load_config(str(config_file))
 
-        assert config.cycle_time == (21, 50)
+        assert config.cycle_time == dt_time(21, 50)
 
 
 if __name__ == "__main__":
