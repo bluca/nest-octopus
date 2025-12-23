@@ -24,10 +24,10 @@ import os
 import signal
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from nest_octopus.nest_thermostat import EcoMode, NestThermostatClient, ThermostatMode
 from nest_octopus.octopus import OctopusEnergyClient, PricePoint
@@ -127,71 +127,89 @@ def parse_tg_active_period(value: str) -> Tuple[int, int, int, int]:
     return parse_time_range(value, "TG active period")
 
 
-def parse_price_threshold(value: str, param_name: str = "price threshold") -> Tuple[Optional[float], Optional[float]]:
+@dataclass
+class TemperatureTier:
+    """Represents a temperature tier with its price threshold."""
+    temperature: float  # Temperature in °C
+    threshold_pct: Optional[float] = None  # Percentage multiplier (e.g., 0.75 for 75%)
+    threshold_abs: Optional[float] = None  # Absolute price in pence
+
+    def __post_init__(self) -> None:
+        """Validate that at least one threshold is set."""
+        if self.threshold_pct is None and self.threshold_abs is None:
+            raise ValueError("At least one of threshold_pct or threshold_abs must be set")
+
+
+class PeriodDict(TypedDict):
+    """Type definition for heating period dictionary."""
+    temperature: Optional[float]
+    eco_mode: bool
+    start: datetime
+    end: datetime
+
+
+def parse_temperature_tier(value: str) -> TemperatureTier:
     """
-    Parse price threshold with '%' (percentage) or 'p' (pence) suffix.
+    Parse temperature tier in format <temp>@<price>.
 
     Args:
-        value: String with number followed by '%' or 'p' (e.g., "75%", "15p")
-        param_name: Name of parameter for error messages
+        value: String in format "<temp>@<price>" where:
+               - temp is temperature in °C (e.g., "22", "20.5")
+               - price ends with '%' (percentage) or 'p' (pence)
+               Examples: "22@50%", "20@15p", "17.5@75%"
 
     Returns:
-        Tuple of (percentage_value, absolute_value) where one is set and the other is None
-        percentage_value: Multiplier (e.g., 0.75 for 75%)
-        absolute_value: Price in pence (e.g., 15.0 for 15p)
+        TemperatureTier object
 
     Raises:
         ValueError: If format is invalid
     """
     value = value.strip()
 
-    if value.endswith('%'):
-        try:
-            number = float(value[:-1])
-            # Convert percentage to multiplier (e.g., 75% -> 0.75)
-            return (number / 100.0, None)
-        except ValueError:
-            raise ValueError(f"Invalid {param_name} format: '{value}'. Expected number before '%'")
-    elif value.endswith('p'):
-        try:
-            number = float(value[:-1])
-            if number < 0:
-                raise ValueError(f"{param_name} must be non-negative")
-            return (None, number)
-        except ValueError:
-            raise ValueError(f"Invalid {param_name} format: '{value}'. Expected number before 'p'")
-    else:
+    if '@' not in value:
         raise ValueError(
-            f"Invalid {param_name} format: '{value}'. "
-            f"Must end with '%' (percentage) or 'p' (pence). "
-            f"Examples: '75%', '15p'"
+            f"Invalid temperature tier format: '{value}'. "
+            f"Expected '<temp>@<price>'. Examples: '22@50%', '20@15p'"
         )
 
+    try:
+        temp_str, price_str = value.split('@', 1)
+        temperature = float(temp_str.strip())
+        price_str = price_str.strip()
 
-def parse_low_price_threshold(value: str) -> Tuple[Optional[float], Optional[float]]:
-    """
-    Parse low price threshold with '%' or 'p' suffix.
+        # Parse price threshold
+        if price_str.endswith('%'):
+            percentage = float(price_str[:-1])
+            # Convert percentage to multiplier (e.g., 75% -> 0.75)
+            return TemperatureTier(
+                temperature=temperature,
+                threshold_pct=percentage / 100.0,
+                threshold_abs=None
+            )
+        elif price_str.endswith('p'):
+            pence = float(price_str[:-1])
+            if pence < 0:
+                raise ValueError("Price must be non-negative")
+            return TemperatureTier(
+                temperature=temperature,
+                threshold_pct=None,
+                threshold_abs=pence
+            )
+        else:
+            raise ValueError(
+                f"Invalid price format: '{price_str}'. "
+                f"Must end with '%' (percentage) or 'p' (pence)"
+            )
 
-    Args:
-        value: String with number followed by '%' or 'p' (e.g., "75%", "15p")
-
-    Returns:
-        Tuple of (percentage_value, absolute_value)
-    """
-    return parse_price_threshold(value, "low price threshold")
-
-
-def parse_high_price_threshold(value: str) -> Tuple[Optional[float], Optional[float]]:
-    """
-    Parse high price threshold with '%' or 'p' suffix.
-
-    Args:
-        value: String with number followed by '%' or 'p' (e.g., "133%", "25p")
-
-    Returns:
-        Tuple of (percentage_value, absolute_value)
-    """
-    return parse_price_threshold(value, "high price threshold")
+    except (ValueError, IndexError) as e:
+        if isinstance(e, ValueError) and "Price must be non-negative" in str(e):
+            raise
+        if isinstance(e, ValueError) and "Invalid price format" in str(e):
+            raise
+        raise ValueError(
+            f"Invalid temperature tier format: '{value}'. "
+            f"Expected '<temp>@<price>'. Examples: '22@50%', '20@15p'. Error: {e}"
+        )
 
 
 @dataclass
@@ -211,12 +229,12 @@ class Config:
     mpan: Optional[str] = None
 
     # Heating preferences
-    low_price_temp: float = 20.0
-    average_price_temp: float = 17.0
-    low_price_threshold_pct: Optional[float] = 0.75  # Percentage multiplier (e.g., 0.75 for 75%)
-    low_price_threshold_abs: Optional[float] = None  # Absolute price in pence (e.g., 15.0 for 15p)
-    high_price_threshold_pct: Optional[float] = 1.33  # Percentage multiplier (e.g., 1.33 for 133%)
-    high_price_threshold_abs: Optional[float] = None  # Absolute price in pence (e.g., 25.0 for 25p)
+    temperature_tiers: List[TemperatureTier] = field(default_factory=lambda: [
+        TemperatureTier(temperature=20.0, threshold_pct=0.75, threshold_abs=None)
+    ])  # Temperature tiers sorted by threshold
+    default_temp: float = 17.0  # Default temperature when no tier matches
+    eco_threshold_pct: Optional[float] = 1.33  # Percentage threshold for ECO mode
+    eco_threshold_abs: Optional[float] = None  # Absolute price threshold for ECO mode
     quiet_window: Optional[Tuple[int, int, int, int]] = None  # (start_hour, start_min, end_hour, end_min)
 
     # Optional TG SupplyMaster settings
@@ -244,13 +262,6 @@ class HeatingAction:
         if self.eco_mode:
             return f"HeatingAction({self.timestamp.strftime('%H:%M')}, ECO, {self.reason})"
         return f"HeatingAction({self.timestamp.strftime('%H:%M')}, {self.temperature}°C, {self.reason})"
-
-
-class PriceCategory:
-    """Price classification categories."""
-    LOW = "LOW"
-    AVERAGE = "AVERAGE"
-    HIGH = "HIGH"
 
 
 def notify(message: bytes) -> None:
@@ -443,16 +454,45 @@ def load_config(config_path: Optional[str] = None) -> Config:
         )
 
         # Optional heating preferences
-        if parser.has_option('heating', 'low_price_temp'):
-            config.low_price_temp = parser.getfloat('heating', 'low_price_temp')
-        if parser.has_option('heating', 'average_price_temp'):
-            config.average_price_temp = parser.getfloat('heating', 'average_price_temp')
-        if parser.has_option('heating', 'low_price_threshold'):
-            threshold_str = parser.get('heating', 'low_price_threshold')
-            config.low_price_threshold_pct, config.low_price_threshold_abs = parse_low_price_threshold(threshold_str)
-        if parser.has_option('heating', 'high_price_threshold'):
-            threshold_str = parser.get('heating', 'high_price_threshold')
-            config.high_price_threshold_pct, config.high_price_threshold_abs = parse_high_price_threshold(threshold_str)
+        temperature_tiers = []
+        default_temp = 17.0
+        eco_threshold_pct = 1.33
+        eco_threshold_abs = None
+
+        # Parse temperature tiers from price_threshold option
+        if parser.has_section('heating'):
+            if parser.has_option('heating', 'price_threshold'):
+                # Get the option value which can have multiple space-separated tiers
+                threshold_str = parser.get('heating', 'price_threshold')
+                # Split by whitespace and parse each tier
+                for tier_str in threshold_str.split():
+                    tier_str = tier_str.strip()
+                    if tier_str:  # Skip empty strings
+                        temperature_tiers.append(parse_temperature_tier(tier_str))
+
+            # Parse default temperature
+            if parser.has_option('heating', 'default_temp'):
+                default_temp = parser.getfloat('heating', 'default_temp')
+
+            # Parse ECO threshold
+            if parser.has_option('heating', 'eco_threshold'):
+                eco_str = parser.get('heating', 'eco_threshold').strip()
+                if eco_str.endswith('%'):
+                    eco_threshold_pct = float(eco_str[:-1]) / 100.0
+                    eco_threshold_abs = None
+                elif eco_str.endswith('p'):
+                    eco_threshold_abs = float(eco_str[:-1])
+                    eco_threshold_pct = 1.33  # Keep a default even when using absolute
+
+        # Set parsed values on config
+        if temperature_tiers:
+            config.temperature_tiers = temperature_tiers
+        config.default_temp = default_temp
+        if eco_threshold_pct is not None:
+            config.eco_threshold_pct = eco_threshold_pct
+        if eco_threshold_abs is not None:
+            config.eco_threshold_abs = eco_threshold_abs
+
         if parser.has_option('heating', 'quiet_window'):
             config.quiet_window = parse_quiet_window(parser.get('heating', 'quiet_window'))
 
@@ -484,17 +524,21 @@ def apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         logger.debug(f"Overriding tariff code with: {args.tariff_code}")
         config.tariff_code = args.tariff_code
 
-    if args.low_price_threshold is not None:
-        config.low_price_threshold_pct, config.low_price_threshold_abs = args.low_price_threshold
+    if hasattr(args, 'price_threshold') and args.price_threshold:
+        logger.debug(f"Adding {len(args.price_threshold)} price threshold(s)")
+        config.temperature_tiers = args.price_threshold
 
-    if args.high_price_threshold is not None:
-        config.high_price_threshold_pct, config.high_price_threshold_abs = args.high_price_threshold
+    if hasattr(args, 'default_temp') and args.default_temp is not None:
+        config.default_temp = args.default_temp
 
-    if args.low_price_temp is not None:
-        config.low_price_temp = args.low_price_temp
-
-    if args.average_price_temp is not None:
-        config.average_price_temp = args.average_price_temp
+    if hasattr(args, 'eco_threshold') and args.eco_threshold is not None:
+        eco_str = args.eco_threshold.strip()
+        if eco_str.endswith('%'):
+            config.eco_threshold_pct = float(eco_str[:-1]) / 100.0
+            config.eco_threshold_abs = None
+        elif eco_str.endswith('p'):
+            config.eco_threshold_abs = float(eco_str[:-1])
+            config.eco_threshold_pct = None
 
     if args.tg_username is not None:
         config.tg_username = args.tg_username
@@ -584,58 +628,61 @@ def calculate_price_statistics(
     return daily_avg, weekly_avg, daily_min, daily_max
 
 
-def classify_price(
+def determine_target_temperature(
     price: PricePoint,
     daily_avg: float,
     weekly_avg: float,
-    low_price_threshold_pct: Optional[float] = None,
-    low_price_threshold_abs: Optional[float] = None,
-    high_price_threshold_pct: Optional[float] = None,
-    high_price_threshold_abs: Optional[float] = None
-) -> str:
+    tiers: List[TemperatureTier],
+    default_temp: float,
+    eco_threshold_pct: Optional[float] = None,
+    eco_threshold_abs: Optional[float] = None
+) -> Tuple[Optional[float], bool]:
     """
-    Classify a price point as LOW, AVERAGE, or HIGH.
+    Determine target temperature or ECO mode for a given price point.
 
     Args:
-        price: Price point to classify
+        price: Price point to evaluate
         daily_avg: Average price for the day
         weekly_avg: Average price for the week
-        low_price_threshold_pct: Percentage multiplier for low threshold (e.g., 0.75)
-        low_price_threshold_abs: Absolute price in pence for low threshold (e.g., 15.0)
-        high_price_threshold_pct: Percentage multiplier for high threshold (e.g., 1.33)
-        high_price_threshold_abs: Absolute price in pence for high threshold (e.g., 25.0)
+        tiers: List of temperature tiers (should be sorted by threshold, highest first)
+        default_temp: Default temperature if no tier matches
+        eco_threshold_pct: Percentage threshold for ECO mode
+        eco_threshold_abs: Absolute price threshold for ECO mode
 
     Returns:
-        Price category (LOW, AVERAGE, or HIGH)
+        Tuple of (temperature, eco_mode) where temperature is None if ECO mode is enabled
     """
-    # Calculate threshold for LOW prices
-    if low_price_threshold_abs is not None:
-        # Absolute threshold in pence
-        avg_threshold = low_price_threshold_abs
-    elif low_price_threshold_pct is not None:
-        # Percentage: LOW below both daily and weekly averages
-        avg_threshold = min(daily_avg, weekly_avg) * low_price_threshold_pct
-    else:
-        # Default to 75%
-        avg_threshold = min(daily_avg, weekly_avg) * 0.75
+    price_value = price.value_inc_vat
 
-    # Calculate threshold for HIGH prices
-    if high_price_threshold_abs is not None:
-        # Absolute threshold in pence
-        high_threshold = high_price_threshold_abs
-    elif high_price_threshold_pct is not None:
-        # Percentage: HIGH significantly above both averages
-        high_threshold = max(daily_avg, weekly_avg) * high_price_threshold_pct
+    # Check if price exceeds ECO threshold
+    if eco_threshold_abs is not None:
+        eco_threshold = eco_threshold_abs
+    elif eco_threshold_pct is not None:
+        eco_threshold = max(daily_avg, weekly_avg) * eco_threshold_pct
     else:
         # Default to 133%
-        high_threshold = max(daily_avg, weekly_avg) * 1.33
+        eco_threshold = max(daily_avg, weekly_avg) * 1.33
 
-    if price.value_inc_vat < avg_threshold:
-        return PriceCategory.LOW
-    elif price.value_inc_vat > high_threshold:
-        return PriceCategory.HIGH
-    else:
-        return PriceCategory.AVERAGE
+    if price_value > eco_threshold:
+        return (None, True)  # ECO mode
+
+    # Check each tier (tiers should be sorted highest temperature first)
+    for tier in tiers:
+        # Calculate threshold for this tier
+        if tier.threshold_abs is not None:
+            threshold = tier.threshold_abs
+        elif tier.threshold_pct is not None:
+            # Use minimum of averages for lower price thresholds
+            threshold = min(daily_avg, weekly_avg) * tier.threshold_pct
+        else:
+            continue
+
+        # If price is below this tier's threshold, use this tier's temperature
+        if price_value < threshold:
+            return (tier.temperature, False)
+
+    # No tier matched, use default temperature
+    return (default_temp, False)
 
 
 def calculate_heating_schedule(
@@ -648,9 +695,9 @@ def calculate_heating_schedule(
     Calculate optimal heating schedule for the next 24 hours.
 
     Strategy:
-    - HIGH prices: Enable ECO mode to minimize costs
-    - LOW price periods: Heat to 22°C for comfort when cheap
-    - AVERAGE prices: Maintain 17°C for basic comfort
+    - Uses temperature tiers to set different temperatures based on price levels
+    - ECO mode enabled when price exceeds threshold
+    - Smooth transitions between temperature levels
 
     Args:
         prices: Price points for next 24 hours
@@ -668,6 +715,9 @@ def calculate_heating_schedule(
         prices, weekly_prices
     )
 
+    # Sort tiers by temperature (highest first) for proper tier matching
+    sorted_tiers = sorted(config.temperature_tiers, key=lambda t: t.temperature, reverse=True)
+
     # Helper function to get datetime from price (always UTC)
     def get_price_datetime(price: PricePoint) -> datetime:
         if isinstance(price.valid_from, str):
@@ -682,110 +732,97 @@ def calculate_heating_schedule(
             return price.valid_from.replace(tzinfo=timezone.utc)
         return price.valid_from.astimezone(timezone.utc)
 
-    # Classify each price point (prices are already sorted chronologically)
-    classified = [
-        (p, classify_price(p, daily_avg, weekly_avg,
-                          config.low_price_threshold_pct, config.low_price_threshold_abs,
-                          config.high_price_threshold_pct, config.high_price_threshold_abs))
+    # Determine target for each price point
+    price_targets = [
+        (p, *determine_target_temperature(
+            p, daily_avg, weekly_avg, sorted_tiers, config.default_temp,
+            config.eco_threshold_pct, config.eco_threshold_abs
+        ))
         for p in prices
     ]
 
-    # Group consecutive periods of same category
-    periods = []
-    current_category = classified[0][1]
-    current_start = get_price_datetime(classified[0][0])
+    # Group consecutive periods with same target
+    periods: List[PeriodDict] = []
+    if price_targets:
+        current_temp, current_eco = price_targets[0][1], price_targets[0][2]
+        current_start = get_price_datetime(price_targets[0][0])
 
-    for i, (price, category) in enumerate(classified):
-        if category != current_category:
-            # Category changed - save the previous period
-            periods.append({
-                'category': current_category,
-                'start': current_start,
-                'end': get_price_datetime(price),
-                'prices': [p for p, c in classified if c == current_category]
-            })
-            current_category = category
-            current_start = get_price_datetime(price)
+        for i, (price, temp, eco_mode) in enumerate(price_targets):
+            if temp != current_temp or eco_mode != current_eco:
+                # Target changed - save the previous period
+                periods.append({
+                    'temperature': current_temp,
+                    'eco_mode': current_eco,
+                    'start': current_start,
+                    'end': get_price_datetime(price),
+                })
+                current_temp, current_eco = temp, eco_mode
+                current_start = get_price_datetime(price)
 
-        # Save the last period
-        if i == len(classified) - 1:
-            periods.append({
-                'category': category,
-                'start': current_start,
-                'end': get_price_datetime(price) + timedelta(minutes=30),  # Add duration of last slot
-                'prices': [p for p, c in classified if c == category]
-            })
+            # Save the last period
+            if i == len(price_targets) - 1:
+                periods.append({
+                    'temperature': temp,
+                    'eco_mode': eco_mode,
+                    'start': current_start,
+                    'end': get_price_datetime(price) + timedelta(minutes=30),
+                })
 
     # Generate actions based on periods
-    current_mode = None
-    previous_category = None
+    previous_temp: Optional[float] = None
+    previous_eco: Optional[bool] = None
+    temp_before_eco: Optional[float] = None  # Track temperature before ECO started
 
-    for i, period in enumerate(periods):
-        period_category = period['category']
+    for period in periods:
+        period_temp = period['temperature']
+        period_eco = period['eco_mode']
         period_start = period['start']
-        assert isinstance(period_category, str)
-        assert isinstance(period_start, datetime)
 
-        # If exiting LOW price period, set temperature back to average
-        if previous_category == PriceCategory.LOW and period_category != PriceCategory.LOW:
-            if current_mode == 'LOW':
-                actions.append(HeatingAction(
-                    timestamp=period_start,
-                    temperature=config.average_price_temp,
-                    eco_mode=False,
-                    reason=f"End of LOW price period - returning to {config.average_price_temp}°C"
-                ))
-                current_mode = 'AVERAGE'
+        # Skip if no change from previous period
+        if period_temp == previous_temp and period_eco == previous_eco:
+            continue
 
-        # If exiting HIGH period, disable ECO mode without setting temperature
-        if previous_category == PriceCategory.HIGH and current_mode == 'ECO':
-            actions.append(HeatingAction(
-                timestamp=period_start,
-                temperature=None,
-                eco_mode=False,
-                reason=f"End of HIGH price period - disabling ECO mode"
-            ))
-            # After disabling ECO, don't set a new temperature - let thermostat maintain current temp
-            current_mode = 'POST_ECO'
-
-        if period_category == PriceCategory.LOW:
-            # Heat to comfort temperature during low prices
-            if current_mode != 'LOW':
-                actions.append(HeatingAction(
-                    timestamp=period_start,
-                    temperature=config.low_price_temp,
-                    eco_mode=False,
-                    reason=f"LOW price period ({period_start.strftime('%H:%M')})"
-                ))
-                current_mode = 'LOW'
-
-        elif period_category == PriceCategory.AVERAGE:
-            # Maintain basic comfort during average prices
-            # Don't set temperature if we just disabled ECO mode
-            if current_mode != 'AVERAGE' and current_mode != 'POST_ECO':
-                actions.append(HeatingAction(
-                    timestamp=period_start,
-                    temperature=config.average_price_temp,
-                    eco_mode=False,
-                    reason=f"AVERAGE price period ({period_start.strftime('%H:%M')})"
-                ))
-                current_mode = 'AVERAGE'
-            elif current_mode == 'POST_ECO':
-                # Just came out of ECO mode, don't change temperature
-                current_mode = 'AVERAGE'
-
-        elif period_category == PriceCategory.HIGH:
-            # During HIGH prices, enable ECO mode to minimize costs
-            if current_mode != 'ECO':
+        # Generate appropriate action
+        if period_eco:
+            # Enable ECO mode
+            if not previous_eco:
+                # Remember what temperature was set before ECO
+                temp_before_eco = previous_temp
                 actions.append(HeatingAction(
                     timestamp=period_start,
                     temperature=None,
                     eco_mode=True,
                     reason=f"HIGH price period ({period_start.strftime('%H:%M')})"
                 ))
-                current_mode = 'ECO'
+        else:
+            # Disable ECO mode if it was on
+            if previous_eco:
+                actions.append(HeatingAction(
+                    timestamp=period_start,
+                    temperature=None,
+                    eco_mode=False,
+                    reason=f"End of HIGH price period - disabling ECO mode"
+                ))
+                # Only set temperature if it's different from what it was before ECO
+                if period_temp is not None and period_temp != temp_before_eco:
+                    actions.append(HeatingAction(
+                        timestamp=period_start,
+                        temperature=period_temp,
+                        eco_mode=False,
+                        reason=f"Temperature tier: {period_temp}°C ({period_start.strftime('%H:%M')})"
+                    ))
+                temp_before_eco = None
+            elif period_temp != previous_temp and period_temp is not None:
+                # Normal temperature change (not related to ECO mode)
+                actions.append(HeatingAction(
+                    timestamp=period_start,
+                    temperature=period_temp,
+                    eco_mode=False,
+                    reason=f"Temperature tier: {period_temp}°C ({period_start.strftime('%H:%M')})"
+                ))
 
-        previous_category = period_category
+        previous_temp = period_temp
+        previous_eco = period_eco
 
     # Sort actions by timestamp
     actions.sort(key=lambda a: a.timestamp)
@@ -1425,8 +1462,11 @@ def run_dry_run(config: Config) -> int:
             print(f"  Weekly Average:  {weekly_avg:.2f}p/kWh")
             print(f"  Daily Minimum:   {daily_min:.2f}p/kWh")
             print(f"  Daily Maximum:   {daily_max:.2f}p/kWh")
-            print(f"  Low Temp:        {config.low_price_temp}°C")
-            print(f"  Average Temp:    {config.average_price_temp}°C")
+            print(f"  Temperature Tiers: {len(config.temperature_tiers)} tier(s)")
+            for i, tier in enumerate(config.temperature_tiers, 1):
+                threshold_str = f"{tier.threshold_pct*100:.0f}%" if tier.threshold_pct else f"{tier.threshold_abs}p"
+                print(f"    Tier {i}: {tier.temperature}°C @ {threshold_str}")
+            print(f"  Default Temp:    {config.default_temp}°C")
             if config.quiet_window:
                 start_h, start_m, end_h, end_m = config.quiet_window
                 print(f"  Quiet Window:    {start_h:02d}:{start_m:02d}-{end_h:02d}:{end_m:02d}")
@@ -1588,28 +1628,25 @@ async def async_main() -> int:
         help='Octopus Energy tariff code (overrides config file)'
     )
     parser.add_argument(
-        '--low-price-threshold',
-        type=parse_low_price_threshold,
+        '--price-threshold',
+        type=parse_temperature_tier,
+        action='append',
+        dest='price_threshold',
         default=None,
-        help='Low price threshold with suffix: use %% for percentage (e.g., "75%%") or p for absolute pence (e.g., "15p"). Default: 75%%'
+        help='Price threshold in format <temp>@<price> (can be specified multiple times). '
+             'Examples: --price-threshold "22@50%%" --price-threshold "20@75%%" --price-threshold "18@15p"'
     )
     parser.add_argument(
-        '--high-price-threshold',
-        type=parse_high_price_threshold,
-        default=None,
-        help='High price threshold with suffix: use %% for percentage (e.g., "133%%") or p for absolute pence (e.g., "25p"). Default: 133%%'
-    )
-    parser.add_argument(
-        '--low-price-temp',
+        '--default-temp',
         type=float,
         default=None,
-        help='Temperature for low price periods in °C (default: 20.0)'
+        help='Default temperature when no tier matches (default: 17.0°C)'
     )
     parser.add_argument(
-        '--average-price-temp',
-        type=float,
+        '--eco-threshold',
+        type=str,
         default=None,
-        help='Temperature for average price periods in °C (default: 17.0)'
+        help='Price threshold for ECO mode with suffix: use %% for percentage (e.g., "133%%") or p for absolute pence (e.g., "25p"). Default: 133%%'
     )
     parser.add_argument(
         '--tg-username',
@@ -1682,25 +1719,17 @@ async def async_main() -> int:
     if args.dry_run and args.tariff_code:
         # Dry-run mode with tariff-code: create minimal config
         logger.debug("Dry-run mode with --tariff-code, skipping config file")
-        # Handle threshold arguments (tuples of percentage, absolute)
-        if args.low_price_threshold is not None:
-            low_pct, low_abs = args.low_price_threshold
-        else:
-            low_pct, low_abs = 0.75, None
 
-        if args.high_price_threshold is not None:
-            high_pct, high_abs = args.high_price_threshold
+        # Use provided tiers or create default
+        if args.price_threshold:
+            temperature_tiers = args.price_threshold
         else:
-            high_pct, high_abs = 1.33, None
+            temperature_tiers = [TemperatureTier(temperature=20.0, threshold_pct=0.75, threshold_abs=None)]
 
         config = Config(
             tariff_code=args.tariff_code,
-            low_price_threshold_pct=low_pct,
-            low_price_threshold_abs=low_abs,
-            high_price_threshold_pct=high_pct,
-            high_price_threshold_abs=high_abs,
-            low_price_temp=args.low_price_temp if args.low_price_temp is not None else 20.0,
-            average_price_temp=args.average_price_temp if args.average_price_temp is not None else 17.0,
+            temperature_tiers=temperature_tiers,
+            default_temp=args.default_temp if args.default_temp is not None else 17.0,
             thermostat_name="",
             client_id="",
             client_secret="",
@@ -1716,6 +1745,17 @@ async def async_main() -> int:
             quiet_window=args.quiet_window,
             logging_level=args.log_level.upper() if args.log_level is not None else 'WARNING',
         )
+
+        # Apply eco threshold if provided
+        if args.eco_threshold:
+            eco_str = args.eco_threshold.strip()
+            if eco_str.endswith('%'):
+                config.eco_threshold_pct = float(eco_str[:-1]) / 100.0
+                config.eco_threshold_abs = None
+            elif eco_str.endswith('p'):
+                config.eco_threshold_abs = float(eco_str[:-1])
+                config.eco_threshold_pct = None
+
         # Configure logging with the specified level
         configure_logging(config.logging_level)
     else:

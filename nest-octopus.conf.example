@@ -14,14 +14,17 @@ client_id = your-client-id.apps.googleusercontent.com
 project_id = your-project-id
 
 [heating]
-# Temperature setpoints in Celsius
-low_price_temp = 20.0
-average_price_temp = 17.0
+# Temperature tiers: <temp>@<price> format
+# Set different temperatures based on electricity price thresholds.
+# Price can be a percentage of average (e.g., 50%, 75%) or absolute pence (e.g., 15p).
+# Multiple tiers can be specified, space-separated.
+# Example: 22@50% 20@75% means 22°C when price < 50% avg, 20°C when < 75%
+price_threshold = 20@75%
 
-# Price classification thresholds (optional)
-# low_price_threshold: multiplier for determining LOW prices (default: 75%)
-#   LOW prices are below min(daily_avg, weekly_avg) * low_price_threshold
-# high_price_threshold: multiplier for determining HIGH prices (default: 133%)
-#   HIGH prices are above max(daily_avg, weekly_avg) * high_price_threshold
-# low_price_threshold = 75%
-# high_price_threshold = 133%
+# Default temperature when no tier threshold is met (°C)
+default_temp = 17.0
+
+# ECO mode threshold (optional)
+# ECO mode is enabled when price exceeds this threshold.
+# Can be percentage (e.g., 133%) or absolute pence (e.g., 25p).
+# eco_threshold = 133%

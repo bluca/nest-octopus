@@ -18,7 +18,7 @@ The heating optimizer automatically:
 
 ### Smart Scheduling
 - **Dynamic price-based optimization**: Heats during cheap periods, reduces heating during expensive periods
-- **Multi-threshold classification**: LOW/AVERAGE/HIGH price periods with configurable thresholds
+- **Temperature tiers**: Multiple configurable temperature levels based on price thresholds
 - **Quiet window support**: Prevents temperature changes during sleep hours while still allowing ECO mode
 - **Daily automation**: Automatic daily updates at 10pm with systemd integration
 
@@ -33,10 +33,10 @@ The heating optimizer automatically:
 
 1. **Fetch prices**: Downloads next 24 hours of electricity prices from Octopus Energy
 2. **Calculate statistics**: Computes daily and weekly average prices
-3. **Classify periods**: Each price period is classified as:
-   - **LOW**: < 75% of average (default: heat to 20°C)
-   - **AVERAGE**: 75-133% of average (default: maintain 17°C)
-   - **HIGH**: > 133% of average (default: ECO mode)
+3. **Apply temperature tiers**: Each price period is evaluated against configurable tiers:
+   - **Temperature tiers**: Set different temperatures based on price thresholds (e.g., 22°C when below 50% of average)
+   - **Default temperature**: Used when no tier matches (default: 17°C)
+   - **ECO mode**: Enabled when price exceeds ECO threshold (default: 133% of average)
 
 ### Schedule Calculation
 
@@ -91,11 +91,12 @@ project_id = your-project-id
 thermostat_name = Living Room
 
 [heating]
-low_price_temp = 20.0        # Temperature during cheap periods (°C)
-average_price_temp = 17.0    # Temperature during normal periods (°C)
-low_price_threshold = 0.75   # Multiplier for low price (75% of average)
-high_price_threshold = 1.33  # Multiplier for high price (133% of average)
-quiet_window = 23:00-07:00   # No temperature changes during this window
+# Temperature tiers: <temp>@<price> format, multiple can be specified
+# Price can be percentage (e.g., 50%) or absolute pence (e.g., 15p)
+price_threshold = 22@50% 20@75%  # 22°C below 50%, 20°C below 75%
+default_temp = 17.0              # Temperature when no tier matches (°C)
+eco_threshold = 133%             # ECO mode above this (% or pence)
+quiet_window = 23:00-07:00       # No temperature changes during this window
 
 [tg_supplymaster]
 # username from TG app
@@ -135,10 +136,10 @@ python -m nest_octopus.heating_optimizer --dry-run --tariff-code E-1R-AGILE-FLEX
 Example output:
 ```
 === Heating Schedule (Next 24 Hours) ===
-20:00 → 22.0°C (LOW price period)
-23:00 → 17.0°C (AVERAGE price - quiet window prevents change)
+20:00 → 22.0°C (Temperature tier: 22°C)
+23:00 → 17.0°C (Default temperature)
 06:00 → ECO (HIGH price period)
-08:00 → 17.0°C (AVERAGE price period)
+08:00 → 17.0°C (Temperature tier: 17°C)
 ```
 
 ### Daemon Mode
@@ -163,10 +164,10 @@ All configuration parameters can be overridden via CLI:
 --tariff-code CODE             # Override tariff code
 
 # Heating preferences
---low-price-threshold FLOAT    # Low price multiplier (default: 0.75)
---high-price-threshold FLOAT   # High price multiplier (default: 1.33)
---low-price-temp TEMP          # Temperature for cheap periods (default: 20.0)
---average-price-temp TEMP      # Temperature for normal periods (default: 17.0)
+--price-threshold TIER         # Temperature tier: <temp>@<price> (can specify multiple)
+                               # Examples: --price-threshold "22@50%" --price-threshold "20@75%"
+--default-temp TEMP            # Default temperature when no tier matches (default: 17.0)
+--eco-threshold THRESHOLD      # ECO mode threshold (% or pence, default: 133%)
 --quiet-window HH:MM-HH:MM     # Time range for quiet operation
 
 # TG SupplyMaster

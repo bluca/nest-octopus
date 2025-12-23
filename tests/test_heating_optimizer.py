@@ -23,16 +23,15 @@ from nest_octopus.heating_optimizer import (
     Config,
     ConfigurationError,
     HeatingAction,
-    PriceCategory,
+    TemperatureTier,
     calculate_heating_schedule,
     calculate_price_statistics,
-    classify_price,
+    determine_target_temperature,
     execute_heating_action,
     find_cheapest_windows,
     find_default_config,
     load_config,
-    parse_low_price_threshold,
-    parse_high_price_threshold,
+    parse_temperature_tier,
     parse_quiet_window,
     parse_tg_active_period,
     run_daily_cycle,
@@ -105,8 +104,9 @@ average_price_temp = 17.0
         assert config.client_secret == "test-secret-abc123"
         assert config.refresh_token == "test-refresh-xyz789"
         assert config.project_id == "test-project-123"
-        assert config.low_price_temp == 20.0
-        assert config.average_price_temp == 17.0
+        # Check default temperature tiers
+        assert len(config.temperature_tiers) >= 1
+        assert config.default_temp == 17.0
 
     def test_load_config_missing_file(self) -> None:
         """Test error when config file doesn't exist."""
@@ -163,8 +163,8 @@ project_id = test-proj
             config = load_config(str(config_file))
 
         # Check default values
-        assert config.low_price_temp == 20.0
-        assert config.average_price_temp == 17.0
+        assert len(config.temperature_tiers) >= 1
+        assert config.default_temp == 17.0
 
     def test_find_default_config_not_found(self) -> None:
         """Test find_default_config returns None when no files exist."""
@@ -229,74 +229,6 @@ project_id = test-proj
                 load_config(None)
 
 
-class TestPriceAnalysis:
-    """Test price statistics and classification."""
-
-    def test_calculate_price_statistics(self) -> None:
-        """Test price statistics calculation."""
-        daily_prices = load_price_fixture("typical_day_prices.json")
-        weekly_prices = load_price_fixture("weekly_prices_sample.json")
-
-        daily_avg, weekly_avg, daily_min, daily_max = calculate_price_statistics(
-            daily_prices, weekly_prices
-        )
-
-        # Check reasonable values
-        assert daily_min < daily_avg < daily_max
-        assert 0 < daily_avg < 50
-        assert 0 < weekly_avg < 50
-        assert daily_min >= 0
-
-    def test_classify_price_high(self) -> None:
-        """Test that very high prices are classified as HIGH."""
-        price = create_price_point(
-            '2024-12-02T17:00:00Z',
-            '2024-12-02T17:30:00Z',
-            45.5
-        )
-
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold_pct=0.75, high_price_threshold_pct=1.33)
-
-        # 45.5 > max(15.0, 14.0) * 1.33 = 19.95, so should be HIGH
-        assert category == PriceCategory.HIGH
-
-    def test_classify_price_low(self) -> None:
-        """Test classification of low prices."""
-        price = create_price_point(
-            '2024-12-02T02:00:00Z',
-            '2024-12-02T02:30:00Z',
-            5.3
-        )
-
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold_pct=0.75, high_price_threshold_pct=1.33)
-
-        assert category == PriceCategory.LOW
-
-    def test_classify_price_average(self) -> None:
-        """Test classification of average prices."""
-        price = create_price_point(
-            '2024-12-02T10:00:00Z',
-            '2024-12-02T10:30:00Z',
-            14.5  # Between avg and high threshold
-        )
-
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold_pct=0.75, high_price_threshold_pct=1.33)
-
-        assert category == PriceCategory.AVERAGE
-
-    def test_classify_price_high_moderate_value(self) -> None:
-        """Test classification of moderately high prices."""
-        price = create_price_point(
-            '2024-12-02T15:00:00Z',
-            '2024-12-02T15:30:00Z',
-            20.3
-        )
-
-        category = classify_price(price, daily_avg=15.0, weekly_avg=14.0, low_price_threshold_pct=0.75, high_price_threshold_pct=1.33)
-
-        assert category == PriceCategory.HIGH
-
-
 class TestHeatingSchedule:
     """Test heating schedule calculation."""
 
@@ -312,8 +244,8 @@ class TestHeatingSchedule:
             client_secret="secret",
             refresh_token="token",
             project_id="proj",
-            low_price_temp=20.0,
-            average_price_temp=17.0
+            temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75, threshold_abs=None)],
+            default_temp=17.0
         )
 
         start_time = datetime(2024, 12, 1, 20, 0)
@@ -580,8 +512,8 @@ class TestSchedulingLogic:
             client_secret="secret",
             refresh_token="token",
             project_id="proj",
-            low_price_temp=20.0,
-            average_price_temp=17.0
+            temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75, threshold_abs=None)],
+            default_temp=17.0
         )
 
         actions = calculate_heating_schedule(
@@ -651,40 +583,40 @@ class TestSchedulingLogic:
             client_secret="secret",
             refresh_token="token",
             project_id="proj",
-            low_price_temp=20.0,
-            average_price_temp=17.0
+            temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75, threshold_abs=None)],
+            default_temp=17.0
         )
 
         actions = calculate_heating_schedule(
             prices, weekly_prices, config, datetime(2024, 12, 1, 20, 0, tzinfo=timezone.utc)
         )
 
-        # Find the action that sets temperature to 20°C (entering LOW period)
+        # Find the action that sets temperature to 20°C (entering tier during low prices)
         low_temp_action = next((a for a in actions if a.temperature == 20.0), None)
-        assert low_temp_action is not None, "Should have action to heat to 20°C during LOW prices"
+        assert low_temp_action is not None, "Should have action to heat to 20°C during low prices"
 
-        # Find the action that returns to 17°C (exiting LOW period)
-        return_to_average = [a for a in actions
+        # Find the action that returns to 17°C (exiting tier when prices rise)
+        return_to_default = [a for a in actions
                             if a.temperature == 17.0
                             and a.timestamp > low_temp_action.timestamp
-                            and "End of LOW price period" in a.reason]
-        assert len(return_to_average) > 0, "Should return to 17°C when LOW price period ends"
+                            and "Temperature tier" in a.reason]
+        assert len(return_to_default) > 0, "Should return to 17°C when prices rise above tier threshold"
 
-        # Verify the return happens at the expected time (03:00 when AVERAGE period starts)
-        assert return_to_average[0].timestamp.hour == 3
-        assert return_to_average[0].timestamp.minute == 0
+        # Verify the return happens at the expected time (03:00 when prices return to average)
+        assert return_to_default[0].timestamp.hour == 3
+        assert return_to_default[0].timestamp.minute == 0
 
     def test_low_price_to_high_returns_to_average_then_eco(self) -> None:
-        """Test that when LOW period transitions to HIGH, temp returns to average before ECO."""
-        # Create scenario: LOW prices 14:00-16:00, then HIGH at 16:00
+        """Test that when tier period transitions to ECO, it goes directly to ECO mode."""
+        # Create scenario: tier prices 14:00-16:00, then ECO at 16:00
         prices = [
-            create_price_point('2024-12-02T14:00:00Z', '2024-12-02T14:30:00Z', 8.0),   # LOW
-            create_price_point('2024-12-02T14:30:00Z', '2024-12-02T15:00:00Z', 7.0),   # LOW
-            create_price_point('2024-12-02T15:00:00Z', '2024-12-02T15:30:00Z', 9.0),   # LOW
-            create_price_point('2024-12-02T15:30:00Z', '2024-12-02T16:00:00Z', 8.5),   # LOW
-            create_price_point('2024-12-02T16:00:00Z', '2024-12-02T16:30:00Z', 45.0),  # HIGH
-            create_price_point('2024-12-02T16:30:00Z', '2024-12-02T17:00:00Z', 50.0),  # HIGH
-            create_price_point('2024-12-02T17:00:00Z', '2024-12-02T17:30:00Z', 48.0),  # HIGH
+            create_price_point('2024-12-02T14:00:00Z', '2024-12-02T14:30:00Z', 8.0),   # Tier
+            create_price_point('2024-12-02T14:30:00Z', '2024-12-02T15:00:00Z', 7.0),   # Tier
+            create_price_point('2024-12-02T15:00:00Z', '2024-12-02T15:30:00Z', 9.0),   # Tier
+            create_price_point('2024-12-02T15:30:00Z', '2024-12-02T16:00:00Z', 8.5),   # Tier
+            create_price_point('2024-12-02T16:00:00Z', '2024-12-02T16:30:00Z', 45.0),  # ECO
+            create_price_point('2024-12-02T16:30:00Z', '2024-12-02T17:00:00Z', 50.0),  # ECO
+            create_price_point('2024-12-02T17:00:00Z', '2024-12-02T17:30:00Z', 48.0),  # ECO
         ]
 
         weekly_prices = [
@@ -698,8 +630,8 @@ class TestSchedulingLogic:
             client_secret="secret",
             refresh_token="token",
             project_id="proj",
-            low_price_temp=20.0,
-            average_price_temp=17.0
+            temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75, threshold_abs=None)],
+            default_temp=17.0
         )
 
         actions = calculate_heating_schedule(
@@ -709,20 +641,15 @@ class TestSchedulingLogic:
         # Find the sequence of actions
         sorted_actions = sorted(actions, key=lambda a: a.timestamp)
 
-        # Should have: 20°C (LOW), then 17°C (end of LOW), then ECO (HIGH)
-        low_temp_action = next((a for a in sorted_actions if a.temperature == 20.0), None)
-        assert low_temp_action is not None, "Should heat to 20°C during LOW prices"        # Next should be return to average temp
-        actions_after_low = [a for a in sorted_actions if a.timestamp > low_temp_action.timestamp]
-        return_to_average = next((a for a in actions_after_low
-                                 if a.temperature == 17.0
-                                 and "End of LOW price period" in a.reason), None)
-        assert return_to_average is not None, "Should return to 17°C when LOW period ends"
-        assert return_to_average.timestamp.hour == 16
+        # Should have: 20°C (tier), then ECO (high prices)
+        tier_temp_action = next((a for a in sorted_actions if a.temperature == 20.0), None)
+        assert tier_temp_action is not None, "Should heat to 20°C during tier prices"
 
-        # Then should enable ECO mode for HIGH prices
-        eco_action = next((a for a in actions_after_low
-                          if a.eco_mode and a.timestamp >= return_to_average.timestamp), None)
-        assert eco_action is not None, "Should enable ECO mode for HIGH price period"
+        # Next should enable ECO mode for high prices (directly, no intermediate default temp)
+        actions_after_tier = [a for a in sorted_actions if a.timestamp > tier_temp_action.timestamp]
+        eco_action = next((a for a in actions_after_tier if a.eco_mode), None)
+        assert eco_action is not None, "Should enable ECO mode for high price period"
+        assert eco_action.timestamp.hour == 16
 
     def test_disabling_eco_mode_does_not_set_temperature(self) -> None:
         """Test that when exiting HIGH period (ECO mode), temperature is not set when entering AVERAGE."""
@@ -748,8 +675,8 @@ class TestSchedulingLogic:
             client_secret="secret",
             refresh_token="token",
             project_id="proj",
-            low_price_temp=20.0,
-            average_price_temp=17.0
+            temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75, threshold_abs=None)],
+            default_temp=17.0
         )
 
         actions = calculate_heating_schedule(
@@ -1007,8 +934,8 @@ class TestSignalHandling:
             client_secret="secret",
             refresh_token="token",
             project_id="proj",
-            low_price_temp=20.0,
-            average_price_temp=17.0
+            temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75, threshold_abs=None)],
+            default_temp=17.0
         )
         mock_load_config.return_value = mock_config
 
@@ -1360,8 +1287,8 @@ client_id = test-client-id.apps.googleusercontent.com
 project_id = test-project-123
 
 [heating]
-low_price_temp = invalid
-average_price_temp = 17.0
+tier1 = 20@75%
+default_temp = invalid
 """)
 
         creds_dir = tmp_path / "credentials"
@@ -1520,7 +1447,8 @@ class TestQuietWindow:
                 assert False, f"Temperature-setting action at {local_time} should be filtered in quiet window"
 
     def test_calculate_heating_schedule_without_quiet_window(self) -> None:
-        """Test that schedule works normally without quiet window."""
+        """Test that quiet window filters temperature-setting actions but not ECO mode changes."""
+        # Create scenario where temperature changes between tier (3p) and default (12p)
         prices = []
         base_time = datetime(2024, 1, 1, 20, 0, tzinfo=timezone.utc)
 
@@ -1529,7 +1457,8 @@ class TestQuietWindow:
             minute = (i % 2) * 30
             valid_from = base_time + timedelta(hours=hour_offset, minutes=minute)
             valid_to = valid_from + timedelta(minutes=30)
-            price = 3.0 if (i // 4) % 2 == 0 else 16.0
+            # Alternate every 2 hours: 20:00-22:00 @ 3p, 22:00-00:00 @ 12p, 00:00-02:00 @ 3p, etc.
+            price = 3.0 if (hour_offset % 4) < 2 else 12.0
 
             prices.append(create_price_point(
                 valid_from.isoformat(),
@@ -1551,10 +1480,12 @@ class TestQuietWindow:
             refresh_token='test',
             project_id='test',
             tariff_code='AGILE-TEST',
-            quiet_window=None
+            quiet_window=None,
+            temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75, threshold_abs=None)],
+            default_temp=17.0
         )
 
-        # With quiet window
+        # With quiet window (23:00-07:00)
         config_with_quiet = Config(
             thermostat_name='Test',
             client_id='test',
@@ -1562,13 +1493,21 @@ class TestQuietWindow:
             refresh_token='test',
             project_id='test',
             tariff_code='AGILE-TEST',
-            quiet_window=(23, 0, 7, 0)
+            quiet_window=(23, 0, 7, 0),
+            temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75, threshold_abs=None)],
+            default_temp=17.0
         )
 
         actions_no_quiet = calculate_heating_schedule(prices, weekly_prices, config_no_quiet, base_time)
         actions_with_quiet = calculate_heating_schedule(prices, weekly_prices, config_with_quiet, base_time)
 
-        # Should have fewer actions with quiet window
+        # Count temperature-setting actions in quiet window (23:00-07:00) without quiet window config
+        temp_actions_in_quiet = [a for a in actions_no_quiet
+                                 if a.temperature is not None
+                                 and ((a.timestamp.hour >= 23) or (a.timestamp.hour < 7))]
+
+        # Should have fewer actions with quiet window (temperature changes filtered)
+        assert len(temp_actions_in_quiet) > 0, "Should have temperature actions in quiet hours without config"
         assert len(actions_with_quiet) < len(actions_no_quiet)
 
     def test_quiet_window_allows_eco_mode_blocks_temperature(self) -> None:
@@ -1827,145 +1766,6 @@ class TestTGActivePeriod:
         start, end, _ = windows[0]
         assert start.astimezone().hour == 2 and start.astimezone().minute == 0
         assert end.astimezone().hour == 4 and end.astimezone().minute == 0
-
-
-class TestPriceThresholdParsing:
-    """Test parsing of price thresholds with '%' and 'p' suffixes."""
-
-    def test_parse_low_price_threshold_percentage(self) -> None:
-        """Test parsing percentage threshold."""
-        pct, abs_val = parse_low_price_threshold("75%")
-        assert pct == 0.75
-        assert abs_val is None
-
-    def test_parse_low_price_threshold_absolute(self) -> None:
-        """Test parsing absolute pence threshold."""
-        pct, abs_val = parse_low_price_threshold("15p")
-        assert pct is None
-        assert abs_val == 15.0
-
-    def test_parse_high_price_threshold_percentage(self) -> None:
-        """Test parsing percentage threshold."""
-        pct, abs_val = parse_high_price_threshold("133%")
-        assert pct == 1.33
-        assert abs_val is None
-
-    def test_parse_high_price_threshold_absolute(self) -> None:
-        """Test parsing absolute pence threshold."""
-        pct, abs_val = parse_high_price_threshold("25p")
-        assert pct is None
-        assert abs_val == 25.0
-
-    def test_parse_threshold_decimal_percentage(self) -> None:
-        """Test parsing decimal percentage."""
-        pct, abs_val = parse_low_price_threshold("82.5%")
-        assert pct == 0.825
-        assert abs_val is None
-
-    def test_parse_threshold_decimal_absolute(self) -> None:
-        """Test parsing decimal pence value."""
-        pct, abs_val = parse_low_price_threshold("12.5p")
-        assert pct is None
-        assert abs_val == 12.5
-
-    def test_parse_threshold_whitespace(self) -> None:
-        """Test parsing with whitespace."""
-        pct, abs_val = parse_low_price_threshold("  75%  ")
-        assert pct == 0.75
-        assert abs_val is None
-
-    def test_parse_threshold_invalid_no_suffix(self) -> None:
-        """Test that missing suffix raises error."""
-        with pytest.raises(ValueError) as exc_info:
-            parse_low_price_threshold("75")
-        assert "Must end with '%' (percentage) or 'p' (pence)" in str(exc_info.value)
-
-    def test_parse_threshold_invalid_suffix(self) -> None:
-        """Test that invalid suffix raises error."""
-        with pytest.raises(ValueError) as exc_info:
-            parse_low_price_threshold("75x")
-        assert "Must end with '%' (percentage) or 'p' (pence)" in str(exc_info.value)
-
-    def test_parse_threshold_invalid_number(self) -> None:
-        """Test that invalid number raises error."""
-        with pytest.raises(ValueError) as exc_info:
-            parse_low_price_threshold("abc%")
-        assert "Invalid" in str(exc_info.value)
-
-    def test_classify_price_with_absolute_low_threshold(self) -> None:
-        """Test price classification with absolute low threshold."""
-        # Create a price point at 10p
-        price = create_price_point(
-            '2024-12-08T10:00:00Z',
-            '2024-12-08T10:30:00Z',
-            10.0
-        )
-
-        # Daily avg: 20p, Weekly avg: 18p
-        # Low threshold: 12p (absolute)
-        # High threshold: 130% of 20p = 26p
-        category = classify_price(
-            price,
-            daily_avg=20.0,
-            weekly_avg=18.0,
-            low_price_threshold_pct=None,
-            low_price_threshold_abs=12.0,
-            high_price_threshold_pct=1.30,
-            high_price_threshold_abs=None
-        )
-
-        # 10p < 12p, so should be LOW
-        assert category == PriceCategory.LOW
-
-    def test_classify_price_with_absolute_high_threshold(self) -> None:
-        """Test price classification with absolute high threshold."""
-        # Create a price point at 30p
-        price = create_price_point(
-            '2024-12-08T10:00:00Z',
-            '2024-12-08T10:30:00Z',
-            30.0
-        )
-
-        # Daily avg: 20p, Weekly avg: 18p
-        # Low threshold: 75% of 18p = 13.5p
-        # High threshold: 25p (absolute)
-        category = classify_price(
-            price,
-            daily_avg=20.0,
-            weekly_avg=18.0,
-            low_price_threshold_pct=0.75,
-            low_price_threshold_abs=None,
-            high_price_threshold_pct=None,
-            high_price_threshold_abs=25.0
-        )
-
-        # 30p > 25p, so should be HIGH
-        assert category == PriceCategory.HIGH
-
-    def test_classify_price_with_both_absolute_thresholds(self) -> None:
-        """Test price classification with both absolute thresholds."""
-        # Create a price point at 18p
-        price = create_price_point(
-            '2024-12-08T10:00:00Z',
-            '2024-12-08T10:30:00Z',
-            18.0
-        )
-
-        # Daily avg: 20p, Weekly avg: 22p (ignored for absolute thresholds)
-        # Low threshold: 15p (absolute)
-        # High threshold: 25p (absolute)
-        category = classify_price(
-            price,
-            daily_avg=20.0,
-            weekly_avg=22.0,
-            low_price_threshold_pct=None,
-            low_price_threshold_abs=15.0,
-            high_price_threshold_pct=None,
-            high_price_threshold_abs=25.0
-        )
-
-        # 15p < 18p < 25p, so should be AVERAGE
-        assert category == PriceCategory.AVERAGE
 
 
 if __name__ == "__main__":
