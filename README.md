@@ -7,7 +7,7 @@ Boilerplate and unit tests written with Copilot, as life is short. Don't @ me.
 ## Overview
 
 The heating optimizer automatically:
-1. Fetches electricity prices daily at 10pm for the next 24 hours
+1. Fetches electricity prices daily at 21:50 (configurable) for the next 24 hours
 2. Analyzes prices against daily and weekly averages
 3. Calculates optimal heating schedule based on price thresholds
 4. Executes temperature and ECO mode changes at calculated times
@@ -20,7 +20,7 @@ The heating optimizer automatically:
 - **Dynamic price-based optimization**: Heats during cheap periods, reduces heating during expensive periods
 - **Temperature tiers**: Multiple configurable temperature levels based on price thresholds
 - **Quiet window support**: Prevents temperature changes during sleep hours while still allowing ECO mode
-- **Daily automation**: Automatic daily updates at 10pm with systemd integration
+- **Daily automation**: Configurable daily updates (default: 21:50) with systemd integration
 
 ### Device Integration
 - **Google Nest Thermostat**: Full control via official Google SDM API
@@ -48,7 +48,7 @@ The heating optimizer automatically:
 
 7. **Execute actions**: Applies each action at its scheduled time
 8. **Sleep until next**: Waits for next scheduled change
-9. **Daily refresh**: At 10pm, fetches new prices and recalculates schedule
+9. **Daily refresh**: At configured time (default 21:50), fetches new prices and recalculates schedule
 
 ## Project Structure
 
@@ -97,6 +97,7 @@ price_threshold = 22@50% 20@75%  # 22°C below 50%, 20°C below 75%
 default_temp = 17.0              # Temperature when no tier matches (°C)
 eco_threshold = 133%             # ECO mode above this (% or pence)
 quiet_window = 23:00-07:00       # No temperature changes during this window
+cycle_time = 21:50               # Time of day to run daily optimization (default: 21:50)
 
 [tg_supplymaster]
 # username from TG app
@@ -169,6 +170,7 @@ All configuration parameters can be overridden via CLI:
 --default-temp TEMP            # Default temperature when no tier matches (default: 17.0)
 --eco-threshold THRESHOLD      # ECO mode threshold (% or pence, default: 133%)
 --quiet-window HH:MM-HH:MM     # Time range for quiet operation
+--cycle-time HH:MM             # Time of day to run daily optimization (default: 21:50)
 
 # TG SupplyMaster
 --tg-username USER             # TG username

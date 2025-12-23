@@ -28,3 +28,7 @@ default_temp = 17.0
 # ECO mode is enabled when price exceeds this threshold.
 # Can be percentage (e.g., 133%) or absolute pence (e.g., 25p).
 # eco_threshold = 133%
+
+# Time of day to run daily optimization cycle (optional)
+# Format: hh:mm in local time. Default: 21:50
+# cycle_time = 21:50

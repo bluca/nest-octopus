@@ -127,6 +127,51 @@ def parse_tg_active_period(value: str) -> Tuple[int, int, int, int]:
     return parse_time_range(value, "TG active period")
 
 
+def parse_cycle_time(value: str) -> Tuple[int, int]:
+    """
+    Parse cycle time from format hh:mm.
+
+    Args:
+        value: String in format "hh:mm" (e.g., "21:50")
+
+    Returns:
+        Tuple of (hour, minute)
+
+    Raises:
+        ValueError: If format is invalid
+    """
+    value = value.strip()
+
+    if ':' not in value:
+        raise ValueError(
+            f"Invalid cycle time format: '{value}'. "
+            f"Expected 'hh:mm' format. Example: '21:50'"
+        )
+
+    try:
+        parts = value.split(':')
+        if len(parts) != 2:
+            raise ValueError(f"Invalid cycle time format: '{value}'")
+
+        hour = int(parts[0])
+        minute = int(parts[1])
+
+        if not (0 <= hour <= 23):
+            raise ValueError(f"Hour must be 0-23, got {hour}")
+        if not (0 <= minute <= 59):
+            raise ValueError(f"Minute must be 0-59, got {minute}")
+
+        return (hour, minute)
+
+    except (ValueError, IndexError) as e:
+        if "Hour must be" in str(e) or "Minute must be" in str(e):
+            raise
+        raise ValueError(
+            f"Invalid cycle time format: '{value}'. "
+            f"Expected 'hh:mm' format. Example: '21:50'. Error: {e}"
+        )
+
+
 @dataclass
 class TemperatureTier:
     """Represents a temperature tier with its price threshold."""
@@ -248,6 +293,9 @@ class Config:
 
     # Logging
     logging_level: str = 'WARNING'  # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+
+    # Daily cycle time
+    cycle_time: Tuple[int, int] = (21, 50)  # (hour, minute) for daily cycle in local time
 
 
 @dataclass
@@ -496,6 +544,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
         if parser.has_option('heating', 'quiet_window'):
             config.quiet_window = parse_quiet_window(parser.get('heating', 'quiet_window'))
 
+        if parser.has_option('heating', 'cycle_time'):
+            config.cycle_time = parse_cycle_time(parser.get('heating', 'cycle_time'))
+
         # Optional logging configuration
         if parser.has_option('logging', 'level'):
             config.logging_level = parser.get('logging', 'level').upper()
@@ -563,6 +614,9 @@ def apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
 
     if args.quiet_window is not None:
         config.quiet_window = args.quiet_window
+
+    if args.cycle_time is not None:
+        config.cycle_time = args.cycle_time
 
     if args.log_level is not None:
         config.logging_level = args.log_level.upper()
@@ -1699,6 +1753,13 @@ async def async_main() -> int:
              'No heating actions will be scheduled during this window.'
     )
     parser.add_argument(
+        '--cycle-time',
+        type=parse_cycle_time,
+        default=None,
+        help='Time of day to run daily optimization cycle in format hh:mm (e.g., "21:50"). '
+             'Default: 21:50'
+    )
+    parser.add_argument(
         '--log-level',
         type=str,
         default=None,
@@ -1744,6 +1805,7 @@ async def async_main() -> int:
             tg_active_period=args.tg_active_period,
             quiet_window=args.quiet_window,
             logging_level=args.log_level.upper() if args.log_level is not None else 'WARNING',
+            cycle_time=args.cycle_time if args.cycle_time is not None else (21, 50),
         )
 
         # Apply eco threshold if provided
@@ -1796,18 +1858,23 @@ async def async_main() -> int:
     loop = asyncio.get_running_loop()
 
     def schedule_next_cycle() -> None:
-        """Schedule the next daily cycle at 10pm local time."""
+        """Schedule the next daily cycle at configured time in local time."""
         nonlocal next_cycle_handle
 
-        # Calculate next 10pm in local time, then convert to UTC for calculation
+        # Ensure config is not None
+        assert config is not None, "Config must be loaded before scheduling cycle"
+
+        cycle_hour, cycle_minute = config.cycle_time
+
+        # Calculate next cycle time in local time, then convert to UTC for calculation
         now_local = datetime.now().astimezone()
         now_utc = datetime.now(timezone.utc)
 
-        # Find next 10pm in local time
-        next_run_local = now_local.replace(hour=22, minute=0, second=0, microsecond=0)
+        # Find next cycle time in local time
+        next_run_local = now_local.replace(hour=cycle_hour, minute=cycle_minute, second=0, microsecond=0)
 
-        # If it's already past 10pm, schedule for tomorrow
-        if now_local.hour >= 22:
+        # If it's already past the cycle time, schedule for tomorrow
+        if now_local >= next_run_local:
             next_run_local += timedelta(days=1)
 
         # Convert to UTC for the actual delay calculation

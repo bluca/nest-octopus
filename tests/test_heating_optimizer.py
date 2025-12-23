@@ -31,6 +31,7 @@ from nest_octopus.heating_optimizer import (
     find_cheapest_windows,
     find_default_config,
     load_config,
+    parse_cycle_time,
     parse_temperature_tier,
     parse_quiet_window,
     parse_tg_active_period,
@@ -1766,6 +1767,137 @@ class TestTGActivePeriod:
         start, end, _ = windows[0]
         assert start.astimezone().hour == 2 and start.astimezone().minute == 0
         assert end.astimezone().hour == 4 and end.astimezone().minute == 0
+
+
+class TestCycleTime:
+    """Test cycle time parsing and configuration."""
+
+    def test_parse_cycle_time_normal(self) -> None:
+        """Test parsing a normal time."""
+        result = parse_cycle_time("21:50")
+        assert result == (21, 50)
+
+    def test_parse_cycle_time_midnight(self) -> None:
+        """Test parsing midnight."""
+        result = parse_cycle_time("00:00")
+        assert result == (0, 0)
+
+    def test_parse_cycle_time_end_of_day(self) -> None:
+        """Test parsing end of day."""
+        result = parse_cycle_time("23:59")
+        assert result == (23, 59)
+
+    def test_parse_cycle_time_with_spaces(self) -> None:
+        """Test parsing with leading/trailing spaces."""
+        result = parse_cycle_time("  14:30  ")
+        assert result == (14, 30)
+
+    def test_parse_cycle_time_single_digit_hour(self) -> None:
+        """Test parsing with single digit hour."""
+        result = parse_cycle_time("9:00")
+        assert result == (9, 0)
+
+    def test_parse_cycle_time_invalid_format_no_colon(self) -> None:
+        """Test that missing colon raises ValueError."""
+        with pytest.raises(ValueError, match="Expected 'hh:mm' format"):
+            parse_cycle_time("2150")
+
+    def test_parse_cycle_time_invalid_format_text(self) -> None:
+        """Test that invalid text raises ValueError."""
+        with pytest.raises(ValueError, match="Expected 'hh:mm' format"):
+            parse_cycle_time("invalid")
+
+    def test_parse_cycle_time_invalid_hour_too_high(self) -> None:
+        """Test that hour > 23 raises ValueError."""
+        with pytest.raises(ValueError, match="Hour must be 0-23"):
+            parse_cycle_time("24:00")
+
+    def test_parse_cycle_time_invalid_hour_negative(self) -> None:
+        """Test that negative hour raises ValueError."""
+        with pytest.raises(ValueError, match="Hour must be 0-23"):
+            parse_cycle_time("-1:00")
+
+    def test_parse_cycle_time_invalid_minute_too_high(self) -> None:
+        """Test that minute > 59 raises ValueError."""
+        with pytest.raises(ValueError, match="Minute must be 0-59"):
+            parse_cycle_time("12:60")
+
+    def test_parse_cycle_time_invalid_minute_negative(self) -> None:
+        """Test that negative minute raises ValueError."""
+        with pytest.raises(ValueError, match="Minute must be 0-59"):
+            parse_cycle_time("12:-5")
+
+    def test_config_default_cycle_time(self) -> None:
+        """Test that Config has default cycle time of 21:50."""
+        config = Config(
+            thermostat_name='Test',
+            client_id='test',
+            client_secret='test',
+            refresh_token='test',
+            project_id='test',
+        )
+        assert config.cycle_time == (21, 50)
+
+    def test_config_custom_cycle_time(self) -> None:
+        """Test that Config accepts custom cycle time."""
+        config = Config(
+            thermostat_name='Test',
+            client_id='test',
+            client_secret='test',
+            refresh_token='test',
+            project_id='test',
+            cycle_time=(18, 30),
+        )
+        assert config.cycle_time == (18, 30)
+
+    def test_load_config_with_cycle_time(self, tmp_path: Any) -> None:
+        """Test loading configuration with cycle_time setting."""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("""
+[octopus]
+tariff_code = E-1R-AGILE-FLEX-22-11-25-H
+
+[nest]
+thermostat_name = Living Room
+client_id = test-client-id.apps.googleusercontent.com
+project_id = test-project-123
+
+[heating]
+cycle_time = 20:00
+""")
+
+        creds_dir = tmp_path / "credentials"
+        creds_dir.mkdir()
+        (creds_dir / "client_secret").write_text("test-secret")
+        (creds_dir / "refresh_token").write_text("test-token")
+
+        with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
+            config = load_config(str(config_file))
+
+        assert config.cycle_time == (20, 0)
+
+    def test_load_config_without_cycle_time_uses_default(self, tmp_path: Any) -> None:
+        """Test that missing cycle_time uses default 21:50."""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("""
+[octopus]
+tariff_code = E-1R-AGILE-FLEX-22-11-25-H
+
+[nest]
+thermostat_name = Living Room
+client_id = test-client-id.apps.googleusercontent.com
+project_id = test-project-123
+""")
+
+        creds_dir = tmp_path / "credentials"
+        creds_dir.mkdir()
+        (creds_dir / "client_secret").write_text("test-secret")
+        (creds_dir / "refresh_token").write_text("test-token")
+
+        with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
+            config = load_config(str(config_file))
+
+        assert config.cycle_time == (21, 50)
 
 
 if __name__ == "__main__":
