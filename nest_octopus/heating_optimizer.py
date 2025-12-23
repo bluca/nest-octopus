@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from nest_octopus.nest_thermostat import EcoMode, NestThermostatClient, ThermostatMode
+from nest_octopus.ntfy import NtfyClient
 from nest_octopus.octopus import OctopusEnergyClient, PricePoint
 from nest_octopus.tg_supplymaster import (
     DayOfWeek,
@@ -259,6 +260,30 @@ class TemperatureTier:
             raise ValueError("At least one of threshold_pct or threshold_abs must be set")
 
 
+@dataclass
+class NotifyThreshold:
+    """
+    Represents a price threshold for sending notifications.
+
+    Either threshold_pct (compared to weekly average) or threshold_abs must be set.
+    """
+    threshold_pct: Optional[float] = None  # Percentage multiplier (e.g., 1.20 for 120%)
+    threshold_abs: Optional[float] = None  # Absolute price in pence
+
+    def __post_init__(self) -> None:
+        """Validate that exactly one threshold type is set."""
+        if self.threshold_pct is None and self.threshold_abs is None:
+            raise ValueError("One of threshold_pct or threshold_abs must be set")
+        if self.threshold_pct is not None and self.threshold_abs is not None:
+            raise ValueError("Only one of threshold_pct or threshold_abs can be set")
+
+    def __str__(self) -> str:
+        """Return string representation."""
+        if self.threshold_pct is not None:
+            return f"{self.threshold_pct * 100:.0f}%"
+        return f"{self.threshold_abs}p"
+
+
 class PeriodDict(TypedDict):
     """Type definition for heating period dictionary."""
     temperature: Optional[float]
@@ -331,6 +356,55 @@ def parse_temperature_tier(value: str) -> TemperatureTier:
         )
 
 
+def parse_notify_threshold(value: str, param_name: str = "threshold") -> NotifyThreshold:
+    """
+    Parse notification threshold from format '<value>%' or '<value>p'.
+
+    Args:
+        value: String ending with '%' (percentage) or 'p' (pence).
+               Examples: "120%", "15.5p", "80%"
+        param_name: Name of parameter for error messages
+
+    Returns:
+        NotifyThreshold object
+
+    Raises:
+        ValueError: If format is invalid
+    """
+    value = value.strip()
+
+    if not value:
+        raise ValueError(f"Empty {param_name} value")
+
+    try:
+        if value.endswith('%'):
+            percentage = float(value[:-1])
+            return NotifyThreshold(
+                threshold_pct=percentage / 100.0,
+                threshold_abs=None
+            )
+        elif value.endswith('p'):
+            pence = float(value[:-1])
+            if pence < 0:
+                raise ValueError(f"{param_name} must be non-negative")
+            return NotifyThreshold(
+                threshold_pct=None,
+                threshold_abs=pence
+            )
+        else:
+            raise ValueError(
+                f"Invalid {param_name} format: '{value}'. "
+                f"Must end with '%' (percentage of weekly avg) or 'p' (pence)"
+            )
+    except ValueError as e:
+        if "non-negative" in str(e) or "Invalid" in str(e):
+            raise
+        raise ValueError(
+            f"Invalid {param_name} format: '{value}'. "
+            f"Examples: '120%', '15.5p'. Error: {e}"
+        )
+
+
 @dataclass
 class Config:
     """Application configuration."""
@@ -370,6 +444,13 @@ class Config:
 
     # Daily cycle time
     cycle_time: dt_time = field(default_factory=lambda: dt_time(21, 50))  # Time for daily cycle
+
+    # Optional ntfy notification settings
+    ntfy_topic: Optional[str] = None  # Topic for ntfy notifications
+    ntfy_server: str = "https://ntfy.sh"  # ntfy server URL
+    ntfy_token: Optional[str] = None  # Access token for ntfy authentication
+    ntfy_high_threshold: Optional[NotifyThreshold] = None  # Notify when price goes above
+    ntfy_low_threshold: Optional[NotifyThreshold] = None  # Notify when price goes below
 
 
 @dataclass
@@ -621,6 +702,31 @@ def load_config(config_path: Optional[str] = None) -> Config:
         if parser.has_option('heating', 'cycle_time'):
             config.cycle_time = parse_cycle_time(parser.get('heating', 'cycle_time'))
 
+        # Optional ntfy notification settings
+        if parser.has_section('ntfy'):
+            if parser.has_option('ntfy', 'topic'):
+                config.ntfy_topic = parser.get('ntfy', 'topic')
+
+            if parser.has_option('ntfy', 'server'):
+                config.ntfy_server = parser.get('ntfy', 'server')
+
+            if parser.has_option('ntfy', 'high_threshold'):
+                config.ntfy_high_threshold = parse_notify_threshold(
+                    parser.get('ntfy', 'high_threshold'),
+                    "ntfy high_threshold"
+                )
+
+            if parser.has_option('ntfy', 'low_threshold'):
+                config.ntfy_low_threshold = parse_notify_threshold(
+                    parser.get('ntfy', 'low_threshold'),
+                    "ntfy low_threshold"
+                )
+
+        # Read ntfy token from credentials directory (optional)
+        ntfy_token_file = creds_path / "ntfy_token"
+        if ntfy_token_file.exists():
+            config.ntfy_token = ntfy_token_file.read_text().strip()
+
         # Optional logging configuration
         if parser.has_option('logging', 'level'):
             config.logging_level = parser.get('logging', 'level').upper()
@@ -695,6 +801,22 @@ def apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
     if args.log_level is not None:
         config.logging_level = args.log_level.upper()
 
+    # ntfy notification overrides
+    if hasattr(args, 'ntfy_topic') and args.ntfy_topic is not None:
+        config.ntfy_topic = args.ntfy_topic
+
+    if hasattr(args, 'ntfy_server') and args.ntfy_server is not None:
+        config.ntfy_server = args.ntfy_server
+
+    if hasattr(args, 'ntfy_token') and args.ntfy_token is not None:
+        config.ntfy_token = args.ntfy_token
+
+    if hasattr(args, 'ntfy_high_threshold') and args.ntfy_high_threshold is not None:
+        config.ntfy_high_threshold = args.ntfy_high_threshold
+
+    if hasattr(args, 'ntfy_low_threshold') and args.ntfy_low_threshold is not None:
+        config.ntfy_low_threshold = args.ntfy_low_threshold
+
 
 def configure_logging(level: str) -> None:
     """
@@ -754,6 +876,269 @@ def calculate_price_statistics(
     logger.info(f"Price range - Min: {daily_min:.2f}p, Max: {daily_max:.2f}p")
 
     return daily_avg, weekly_avg, daily_min, daily_max
+
+
+@dataclass
+class PricePeriod:
+    """Represents a contiguous period of prices crossing a threshold."""
+    start: datetime
+    end: datetime
+    avg_price: float
+    is_high: bool  # True for high price, False for low price
+
+
+def find_threshold_periods(
+    prices: List[PricePoint],
+    weekly_avg: float,
+    high_threshold: Optional[NotifyThreshold],
+    low_threshold: Optional[NotifyThreshold]
+) -> List[PricePeriod]:
+    """
+    Find contiguous periods where price crosses configured thresholds.
+
+    High price periods that fall within the fixed peak window (16:00-19:00 local time)
+    are excluded since users already know about this predictable peak.
+
+    Args:
+        prices: List of price points (sorted chronologically)
+        weekly_avg: Weekly average price for percentage calculations
+        high_threshold: Threshold for high price notifications
+        low_threshold: Threshold for low price notifications
+
+    Returns:
+        List of PricePeriod objects for threshold crossings
+    """
+    # Fixed peak pricing window (16:00-19:00 local time)
+    PEAK_START_HOUR = 16
+    PEAK_END_HOUR = 19
+
+    if not high_threshold and not low_threshold:
+        return []
+
+    periods: List[PricePeriod] = []
+
+    def get_price_datetime(price: PricePoint) -> datetime:
+        if isinstance(price.valid_from, str):
+            dt = datetime.fromisoformat(price.valid_from.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        # valid_from must be datetime if not str
+        assert isinstance(price.valid_from, datetime)
+        if price.valid_from.tzinfo is None:
+            return price.valid_from.replace(tzinfo=timezone.utc)
+        return price.valid_from.astimezone(timezone.utc)
+
+    def get_price_end_datetime(price: PricePoint) -> datetime:
+        if isinstance(price.valid_to, str):
+            dt = datetime.fromisoformat(price.valid_to.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        # valid_to must be datetime if not str
+        assert isinstance(price.valid_to, datetime)
+        if price.valid_to.tzinfo is None:
+            return price.valid_to.replace(tzinfo=timezone.utc)
+        return price.valid_to.astimezone(timezone.utc)
+
+    def is_within_peak_window(start: datetime, end: datetime) -> bool:
+        """Check if a period falls entirely within the peak pricing window (16:00-19:00)."""
+        # Convert to local time
+        start_local = start.astimezone()
+        end_local = end.astimezone()
+
+        # Check if the period is entirely within the peak window on the same day
+        start_hour = start_local.hour
+        end_hour = end_local.hour
+        end_minute = end_local.minute
+
+        # Period must start at or after 16:00 and end at or before 19:00
+        # on the same calendar day
+        if start_local.date() != end_local.date():
+            return False
+
+        starts_in_peak = start_hour >= PEAK_START_HOUR
+        # End hour 19 with 0 minutes means exactly 19:00, which is the boundary
+        ends_in_peak = end_hour < PEAK_END_HOUR or (end_hour == PEAK_END_HOUR and end_minute == 0)
+
+        return starts_in_peak and ends_in_peak
+
+    def is_above_high(price_value: float) -> bool:
+        if not high_threshold:
+            return False
+        if high_threshold.threshold_abs is not None:
+            return price_value > high_threshold.threshold_abs
+        if high_threshold.threshold_pct is not None:
+            return price_value > weekly_avg * high_threshold.threshold_pct
+        return False
+
+    def is_below_low(price_value: float) -> bool:
+        if not low_threshold:
+            return False
+        if low_threshold.threshold_abs is not None:
+            return price_value < low_threshold.threshold_abs
+        if low_threshold.threshold_pct is not None:
+            return price_value < weekly_avg * low_threshold.threshold_pct
+        return False
+
+    # Track current period being built
+    current_period_start: Optional[datetime] = None
+    current_period_prices: List[float] = []
+    current_is_high: Optional[bool] = None
+
+    for i, price in enumerate(prices):
+        price_value = price.value_inc_vat
+        above_high = is_above_high(price_value)
+        below_low = is_below_low(price_value)
+
+        # Determine current state
+        if above_high:
+            state_is_high: Optional[bool] = True
+        elif below_low:
+            state_is_high = False
+        else:
+            state_is_high = None
+
+        # If state changed, close current period and start new one
+        if state_is_high != current_is_high:
+            # Close current period if one was open
+            if current_period_start is not None and current_is_high is not None:
+                # End time is the start of the current price point
+                period_end = get_price_datetime(price)
+                avg_price = sum(current_period_prices) / len(current_period_prices)
+                period = PricePeriod(
+                    start=current_period_start,
+                    end=period_end,
+                    avg_price=avg_price,
+                    is_high=current_is_high
+                )
+                # Skip high price periods within the fixed peak window (16:00-19:00)
+                if period.is_high and is_within_peak_window(period.start, period.end):
+                    logger.debug(
+                        f"Skipping high price period {period.start} - {period.end} "
+                        "within fixed peak window"
+                    )
+                else:
+                    periods.append(period)
+
+            # Start new period if we're in a threshold state
+            if state_is_high is not None:
+                current_period_start = get_price_datetime(price)
+                current_period_prices = [price_value]
+                current_is_high = state_is_high
+            else:
+                current_period_start = None
+                current_period_prices = []
+                current_is_high = None
+        elif state_is_high is not None:
+            # Continue current period
+            current_period_prices.append(price_value)
+
+    # Close final period if still open
+    if current_period_start is not None and current_is_high is not None and current_period_prices:
+        period_end = get_price_end_datetime(prices[-1])
+        avg_price = sum(current_period_prices) / len(current_period_prices)
+        period = PricePeriod(
+            start=current_period_start,
+            end=period_end,
+            avg_price=avg_price,
+            is_high=current_is_high
+        )
+        # Skip high price periods within the fixed peak window (16:00-19:00)
+        if period.is_high and is_within_peak_window(period.start, period.end):
+            logger.debug(
+                f"Skipping high price period {period.start} - {period.end} "
+                "within fixed peak window"
+            )
+        else:
+            periods.append(period)
+
+    logger.debug(f"Found {len(periods)} price threshold periods for notifications")
+    return periods
+
+
+def schedule_price_notifications(
+    periods: List[PricePeriod],
+    ntfy_client: NtfyClient,
+    high_threshold: Optional[NotifyThreshold],
+    low_threshold: Optional[NotifyThreshold],
+    quiet_window: Optional[TimeRange] = None
+) -> None:
+    """
+    Schedule notifications for price threshold periods.
+
+    Uses ntfy's delay feature to schedule notifications for the start of each period.
+
+    Args:
+        periods: List of price periods crossing thresholds
+        ntfy_client: Configured ntfy client
+        high_threshold: High price threshold (for message context)
+        low_threshold: Low price threshold (for message context)
+        quiet_window: Optional time range during which notifications should not be sent
+    """
+    now = datetime.now(timezone.utc)
+
+    for period in periods:
+        # Skip periods that have already started
+        if period.start <= now:
+            logger.debug(f"Skipping past period starting at {period.start}")
+            continue
+
+        # Skip periods that start during the quiet window
+        if quiet_window:
+            period_start_local = period.start.astimezone()
+            period_start_time = dt_time(period_start_local.hour, period_start_local.minute)
+            if quiet_window.contains(period_start_time):
+                logger.debug(
+                    f"Skipping notification at {period_start_local.strftime('%H:%M')} "
+                    "during quiet window"
+                )
+                continue
+
+        # Calculate duration in minutes
+        duration_mins = int((period.end - period.start).total_seconds() / 60)
+        duration_str = f"{duration_mins // 60}h {duration_mins % 60}m" if duration_mins >= 60 else f"{duration_mins}m"
+
+        if period.is_high:
+            emoji = "📈"
+            threshold_str = str(high_threshold) if high_threshold else "high"
+            title = f"{emoji} High Price Alert"
+            message = (
+                f"Electricity price is above {threshold_str}\n"
+                f"**Price:** {period.avg_price:.2f}p/kWh\n"
+                f"**Duration:** {duration_str}\n"
+                f"**Until:** {period.end.astimezone().strftime('%H:%M')}"
+            )
+            tags = ["chart_with_upwards_trend", "warning"]
+        else:
+            emoji = "📉"
+            threshold_str = str(low_threshold) if low_threshold else "low"
+            title = f"{emoji} Low Price Alert"
+            message = (
+                f"Electricity price is below {threshold_str}\n"
+                f"**Price:** {period.avg_price:.2f}p/kWh\n"
+                f"**Duration:** {duration_str}\n"
+                f"**Until:** {period.end.astimezone().strftime('%H:%M')}"
+            )
+            tags = ["chart_with_downwards_trend", "moneybag"]
+
+        try:
+            success = ntfy_client.send(
+                message=message,
+                title=title,
+                tags=tags,
+                markdown=True,
+                delay=period.start
+            )
+            if success:
+                logger.info(
+                    f"Scheduled {'high' if period.is_high else 'low'} price notification "
+                    f"for {period.start.astimezone().strftime('%H:%M')}"
+                )
+            else:
+                logger.warning(f"Failed to schedule notification for {period.start}")
+        except Exception as e:
+            logger.error(f"Error scheduling notification: {e}")
 
 
 def determine_target_temperature(
@@ -1386,6 +1771,38 @@ async def run_daily_cycle(
 
         logger.debug(f"Fetched {len(weekly_prices)} price points for previous week")
 
+        # Schedule price notifications if ntfy is configured
+        if config.ntfy_topic and (config.ntfy_high_threshold or config.ntfy_low_threshold):
+            try:
+                # Calculate weekly average for percentage thresholds
+                weekly_avg = sum(p.value_inc_vat for p in weekly_prices) / len(weekly_prices)
+
+                # Find periods crossing thresholds
+                threshold_periods = find_threshold_periods(
+                    daily_prices,
+                    weekly_avg,
+                    config.ntfy_high_threshold,
+                    config.ntfy_low_threshold
+                )
+
+                if threshold_periods:
+                    ntfy_client = NtfyClient(
+                        topic=config.ntfy_topic,
+                        server=config.ntfy_server,
+                        token=config.ntfy_token
+                    )
+                    schedule_price_notifications(
+                        threshold_periods,
+                        ntfy_client,
+                        config.ntfy_high_threshold,
+                        config.ntfy_low_threshold,
+                        config.quiet_window
+                    )
+                    logger.info(f"Scheduled {len(threshold_periods)} price notifications")
+            except Exception as e:
+                logger.error(f"Failed to schedule price notifications: {e}", exc_info=True)
+                # Continue with other operations even if notifications fail
+
         # Program TG SupplyMaster switch if configured
         if config.tg_username and config.tg_password:
             try:
@@ -1748,6 +2165,56 @@ def run_dry_run(config: Config) -> int:
                 print(f"  ❌ Error calculating TG schedule: {e}")
                 print()
 
+            # Display ntfy notifications that would be sent
+            if config.ntfy_topic and (config.ntfy_high_threshold or config.ntfy_low_threshold):
+                print("=" * 70)
+                print("  NTFY PRICE NOTIFICATIONS")
+                print("=" * 70)
+                print()
+                print(f"  Topic:          {config.ntfy_topic}")
+                print(f"  Server:         {config.ntfy_server}")
+                if config.ntfy_high_threshold:
+                    print(f"  High Threshold: {config.ntfy_high_threshold}")
+                if config.ntfy_low_threshold:
+                    print(f"  Low Threshold:  {config.ntfy_low_threshold}")
+                print()
+
+                try:
+                    threshold_periods = find_threshold_periods(
+                        daily_prices,
+                        weekly_avg,
+                        config.ntfy_high_threshold,
+                        config.ntfy_low_threshold
+                    )
+
+                    if threshold_periods:
+                        for i, period in enumerate(threshold_periods, 1):
+                            start_local = period.start.astimezone()
+                            end_local = period.end.astimezone()
+                            duration_mins = int((period.end - period.start).total_seconds() / 60)
+                            duration_str = f"{duration_mins // 60}h {duration_mins % 60}m" if duration_mins >= 60 else f"{duration_mins}m"
+
+                            if period.is_high:
+                                emoji = "📈"
+                                label = "HIGH"
+                                threshold = config.ntfy_high_threshold
+                            else:
+                                emoji = "📉"
+                                label = "LOW"
+                                threshold = config.ntfy_low_threshold
+
+                            print(f"  {i}. {emoji} {label} price alert @ {start_local.strftime('%a %H:%M')}")
+                            print(f"     Price: {period.avg_price:.2f}p/kWh (threshold: {threshold})")
+                            print(f"     Duration: {duration_str} (until {end_local.strftime('%H:%M')})")
+                            print()
+                    else:
+                        print("  ℹ️  No price periods crossing thresholds found")
+                        print()
+
+                except Exception as e:
+                    print(f"  ❌ Error finding notification periods: {e}")
+                    print()
+
         except Exception as e:
             print(f"\n❌ ERROR: {e}")
             logger.error(f"Dry run failed: {e}", exc_info=True)
@@ -1875,6 +2342,39 @@ async def async_main() -> int:
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
         help='Logging level (default: WARNING)'
     )
+    # ntfy notification arguments
+    parser.add_argument(
+        '--ntfy-topic',
+        type=str,
+        default=None,
+        help='ntfy topic for price notifications'
+    )
+    parser.add_argument(
+        '--ntfy-server',
+        type=str,
+        default=None,
+        help='ntfy server URL (default: https://ntfy.sh)'
+    )
+    parser.add_argument(
+        '--ntfy-token',
+        type=str,
+        default=None,
+        help='ntfy access token for authentication'
+    )
+    parser.add_argument(
+        '--ntfy-high-threshold',
+        type=lambda x: parse_notify_threshold(x, "ntfy-high-threshold"),
+        default=None,
+        help='Send notification when price goes above this threshold. '
+             'Use %% suffix for percentage of weekly avg (e.g., "120%%") or p for pence (e.g., "25p")'
+    )
+    parser.add_argument(
+        '--ntfy-low-threshold',
+        type=lambda x: parse_notify_threshold(x, "ntfy-low-threshold"),
+        default=None,
+        help='Send notification when price goes below this threshold. '
+             'Use %% suffix for percentage of weekly avg (e.g., "80%%") or p for pence (e.g., "10p")'
+    )
     args = parser.parse_args()
 
     logger.debug("Heating Optimization Daemon starting")
@@ -1915,6 +2415,11 @@ async def async_main() -> int:
             quiet_window=args.quiet_window,
             logging_level=args.log_level.upper() if args.log_level is not None else 'WARNING',
             cycle_time=args.cycle_time if args.cycle_time is not None else dt_time(21, 50),
+            ntfy_topic=args.ntfy_topic,
+            ntfy_server=args.ntfy_server if args.ntfy_server is not None else "https://ntfy.sh",
+            ntfy_token=args.ntfy_token,
+            ntfy_high_threshold=args.ntfy_high_threshold,
+            ntfy_low_threshold=args.ntfy_low_threshold,
         )
 
         # Apply eco threshold if provided

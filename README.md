@@ -25,6 +25,7 @@ The heating optimizer automatically:
 ### Device Integration
 - **Google Nest Thermostat**: Full control via official Google SDM API
 - **TG SupplyMaster**: Hot water optimization with configurable heating windows via wi-fi relay switch
+- **ntfy Notifications**: Price alerts when electricity goes above or below thresholds
 - **Dual-mode operation**: Can control either or both systems
 
 ## How It Works
@@ -60,6 +61,7 @@ nest-octopus/
 │   ├── octopus.py              # Octopus Energy API client
 │   ├── nest_thermostat.py      # Google Nest SDM API client
 │   └── tg_supplymaster.py      # TG SupplyMaster API client
+│   └── ntfy.py                 # ntfy.sh API client
 ├── tests/                      # unit tests
 ├── mkosi/                      # build portable service image that can be attached to any systemd system
 ├── pyproject.toml
@@ -110,6 +112,13 @@ min_gap_hours = 10           # Minimum gap between windows
 
 [logging]
 level = WARNING              # DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+[ntfy]
+# ntfy.sh notification settings for price alerts
+topic = my-heating-alerts    # Required to enable notifications
+server = https://ntfy.sh     # Optional, default: https://ntfy.sh
+high_threshold = 120%        # Notify when price > 120% of weekly avg
+low_threshold = 10p          # Notify when price < 10p
 ```
 
 ### Credentials
@@ -119,6 +128,7 @@ Credentials are read from `$CREDENTIALS_DIRECTORY` (systemd):
 - `client_secret` - Google OAuth client secret (if using Nest)
 - `refresh_token` - Google OAuth refresh token (if using Nest)
 - `tg_password` - TG SupplyMaster password (if using TG)
+- `ntfy_token` - ntfy access token for authentication (if using ntfy with auth)
 
 ## Usage
 
@@ -179,6 +189,13 @@ All configuration parameters can be overridden via CLI:
 --tg-window-hours HOURS        # Window duration (default: 2)
 --tg-num-windows N             # Number of windows (default: 2)
 --tg-min-gap-hours HOURS       # Minimum gap (default: 10)
+
+# ntfy Notifications
+--ntfy-topic TOPIC             # ntfy topic for price alerts
+--ntfy-server URL              # ntfy server URL (default: https://ntfy.sh)
+--ntfy-token TOKEN             # ntfy access token for authentication
+--ntfy-high-threshold VALUE    # Notify when price exceeds (% or pence, e.g., "120%" or "25p")
+--ntfy-low-threshold VALUE     # Notify when price drops below (% or pence, e.g., "80%" or "10p")
 ```
 
 ### systemd Integration

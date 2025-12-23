@@ -29,6 +29,28 @@ default_temp = 17.0
 # Can be percentage (e.g., 133%) or absolute pence (e.g., 25p).
 # eco_threshold = 133%
 
+# Quiet window: time range when thermostat changes and ntfy notifications are suppressed
+# Format: HH:MM-HH:MM, supports midnight crossing (e.g., 23:00-07:00)
+# quiet_window = 23:00-07:00
+
 # Time of day to run daily optimization cycle (optional)
 # Format: hh:mm in local time. Default: 21:50
 # cycle_time = 21:50
+
+[ntfy]
+# ntfy notification settings for price alerts (optional)
+# See https://ntfy.sh for the hosted service or self-host your own
+
+# Topic name for notifications (required to enable ntfy)
+# topic = my-heating-alerts
+
+# Server URL (default: https://ntfy.sh)
+# server = https://ntfy.sh
+
+# Send notification when price goes above this threshold (optional)
+# Use % suffix for percentage of weekly avg or p for absolute pence
+# high_threshold = 120%
+
+# Send notification when price goes below this threshold (optional)
+# Use % suffix for percentage of weekly avg or p for absolute pence
+# low_threshold = 80%

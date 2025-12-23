@@ -23,6 +23,8 @@ from nest_octopus.heating_optimizer import (
     Config,
     ConfigurationError,
     HeatingAction,
+    NotifyThreshold,
+    PricePeriod,
     TemperatureTier,
     TimeRange,
     calculate_heating_schedule,
@@ -31,14 +33,18 @@ from nest_octopus.heating_optimizer import (
     execute_heating_action,
     find_cheapest_windows,
     find_default_config,
+    find_threshold_periods,
     load_config,
     parse_cycle_time,
+    parse_notify_threshold,
     parse_temperature_tier,
     parse_quiet_window,
     parse_tg_active_period,
     run_daily_cycle,
     run_dry_run,
+    schedule_price_notifications,
 )
+from nest_octopus.ntfy import NtfyClient
 from nest_octopus.octopus import PricePoint
 
 
@@ -1942,6 +1948,574 @@ project_id = test-project-123
             config = load_config(str(config_file))
 
         assert config.cycle_time == dt_time(21, 50)
+
+
+class TestNotifyThreshold:
+    """Tests for NotifyThreshold parsing and validation."""
+
+    def test_parse_notify_threshold_percentage(self) -> None:
+        """Test parsing percentage threshold."""
+        threshold = parse_notify_threshold("120%", "test")
+        assert threshold.threshold_pct == 1.20
+        assert threshold.threshold_abs is None
+
+    def test_parse_notify_threshold_percentage_decimal(self) -> None:
+        """Test parsing percentage threshold with decimal."""
+        threshold = parse_notify_threshold("75.5%", "test")
+        assert threshold.threshold_pct == 0.755
+        assert threshold.threshold_abs is None
+
+    def test_parse_notify_threshold_absolute_pence(self) -> None:
+        """Test parsing absolute pence threshold."""
+        threshold = parse_notify_threshold("15p", "test")
+        assert threshold.threshold_pct is None
+        assert threshold.threshold_abs == 15.0
+
+    def test_parse_notify_threshold_absolute_decimal(self) -> None:
+        """Test parsing absolute threshold with decimal."""
+        threshold = parse_notify_threshold("12.5p", "test")
+        assert threshold.threshold_pct is None
+        assert threshold.threshold_abs == 12.5
+
+    def test_parse_notify_threshold_strips_whitespace(self) -> None:
+        """Test that whitespace is stripped."""
+        threshold = parse_notify_threshold("  80%  ", "test")
+        assert threshold.threshold_pct == 0.80
+
+    def test_parse_notify_threshold_empty_raises(self) -> None:
+        """Test that empty string raises ValueError."""
+        with pytest.raises(ValueError, match="Empty"):
+            parse_notify_threshold("", "test")
+
+    def test_parse_notify_threshold_invalid_suffix_raises(self) -> None:
+        """Test that missing suffix raises ValueError."""
+        with pytest.raises(ValueError, match="Must end with"):
+            parse_notify_threshold("120", "test")
+
+    def test_parse_notify_threshold_negative_pence_raises(self) -> None:
+        """Test that negative pence raises ValueError."""
+        with pytest.raises(ValueError, match="non-negative"):
+            parse_notify_threshold("-5p", "test")
+
+    def test_parse_notify_threshold_invalid_number_raises(self) -> None:
+        """Test that invalid number raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid"):
+            parse_notify_threshold("abc%", "test")
+
+    def test_notify_threshold_str_percentage(self) -> None:
+        """Test string representation for percentage threshold."""
+        threshold = NotifyThreshold(threshold_pct=1.20, threshold_abs=None)
+        assert str(threshold) == "120%"
+
+    def test_notify_threshold_str_absolute(self) -> None:
+        """Test string representation for absolute threshold."""
+        threshold = NotifyThreshold(threshold_pct=None, threshold_abs=15.5)
+        assert str(threshold) == "15.5p"
+
+    def test_notify_threshold_requires_one_value(self) -> None:
+        """Test that at least one threshold type is required."""
+        with pytest.raises(ValueError, match="must be set"):
+            NotifyThreshold(threshold_pct=None, threshold_abs=None)
+
+    def test_notify_threshold_only_one_value(self) -> None:
+        """Test that only one threshold type can be set."""
+        with pytest.raises(ValueError, match="Only one"):
+            NotifyThreshold(threshold_pct=1.0, threshold_abs=10.0)
+
+
+class TestFindThresholdPeriods:
+    """Tests for finding price periods crossing thresholds."""
+
+    def test_find_high_threshold_periods(self) -> None:
+        """Test finding periods above high threshold."""
+        now = datetime(2024, 1, 15, 22, 0, tzinfo=timezone.utc)
+        prices = [
+            create_price_point(
+                (now + timedelta(hours=i/2)).isoformat(),
+                (now + timedelta(hours=(i+1)/2)).isoformat(),
+                15.0 if i < 4 else 25.0 if i < 8 else 15.0  # 2h normal, 2h high, 2h normal
+            )
+            for i in range(12)
+        ]
+
+        high_threshold = NotifyThreshold(threshold_abs=20.0, threshold_pct=None)
+        periods = find_threshold_periods(prices, 15.0, high_threshold, None)
+
+        assert len(periods) == 1
+        assert periods[0].is_high is True
+        assert periods[0].avg_price == 25.0
+
+    def test_find_low_threshold_periods(self) -> None:
+        """Test finding periods below low threshold."""
+        now = datetime(2024, 1, 15, 22, 0, tzinfo=timezone.utc)
+        prices = [
+            create_price_point(
+                (now + timedelta(hours=i/2)).isoformat(),
+                (now + timedelta(hours=(i+1)/2)).isoformat(),
+                15.0 if i < 4 else 5.0 if i < 8 else 15.0  # 2h normal, 2h low, 2h normal
+            )
+            for i in range(12)
+        ]
+
+        low_threshold = NotifyThreshold(threshold_abs=10.0, threshold_pct=None)
+        periods = find_threshold_periods(prices, 15.0, None, low_threshold)
+
+        assert len(periods) == 1
+        assert periods[0].is_high is False
+        assert periods[0].avg_price == 5.0
+
+    def test_find_both_high_and_low_periods(self) -> None:
+        """Test finding both high and low periods."""
+        now = datetime(2024, 1, 15, 22, 0, tzinfo=timezone.utc)
+        prices = [
+            create_price_point(
+                (now + timedelta(hours=i/2)).isoformat(),
+                (now + timedelta(hours=(i+1)/2)).isoformat(),
+                5.0 if i < 4 else 15.0 if i < 8 else 25.0  # 2h low, 2h normal, 2h high
+            )
+            for i in range(12)
+        ]
+
+        high_threshold = NotifyThreshold(threshold_abs=20.0, threshold_pct=None)
+        low_threshold = NotifyThreshold(threshold_abs=10.0, threshold_pct=None)
+        periods = find_threshold_periods(prices, 15.0, high_threshold, low_threshold)
+
+        assert len(periods) == 2
+        assert periods[0].is_high is False  # Low period comes first
+        assert periods[1].is_high is True   # High period second
+
+    def test_find_periods_with_percentage_threshold(self) -> None:
+        """Test finding periods with percentage-based thresholds."""
+        now = datetime(2024, 1, 15, 22, 0, tzinfo=timezone.utc)
+        weekly_avg = 15.0
+        prices = [
+            create_price_point(
+                (now + timedelta(hours=i/2)).isoformat(),
+                (now + timedelta(hours=(i+1)/2)).isoformat(),
+                20.0 if i < 4 else 10.0  # 2h high (>120% of 15), 4h low (<80% of 15)
+            )
+            for i in range(8)
+        ]
+
+        # 120% of 15 = 18, so 20 is above
+        # 80% of 15 = 12, so 10 is below
+        high_threshold = NotifyThreshold(threshold_pct=1.20, threshold_abs=None)
+        low_threshold = NotifyThreshold(threshold_pct=0.80, threshold_abs=None)
+        periods = find_threshold_periods(prices, weekly_avg, high_threshold, low_threshold)
+
+        assert len(periods) == 2
+        assert periods[0].is_high is True
+        assert periods[0].avg_price == 20.0
+        assert periods[1].is_high is False
+        assert periods[1].avg_price == 10.0
+
+    def test_find_periods_no_thresholds_returns_empty(self) -> None:
+        """Test that no thresholds returns empty list."""
+        now = datetime(2024, 1, 15, 22, 0, tzinfo=timezone.utc)
+        prices = [
+            create_price_point(
+                (now + timedelta(hours=i/2)).isoformat(),
+                (now + timedelta(hours=(i+1)/2)).isoformat(),
+                15.0
+            )
+            for i in range(4)
+        ]
+
+        periods = find_threshold_periods(prices, 15.0, None, None)
+        assert len(periods) == 0
+
+    def test_find_periods_none_crossing_threshold(self) -> None:
+        """Test when no prices cross thresholds."""
+        now = datetime(2024, 1, 15, 22, 0, tzinfo=timezone.utc)
+        prices = [
+            create_price_point(
+                (now + timedelta(hours=i/2)).isoformat(),
+                (now + timedelta(hours=(i+1)/2)).isoformat(),
+                15.0  # All normal prices
+            )
+            for i in range(8)
+        ]
+
+        high_threshold = NotifyThreshold(threshold_abs=20.0, threshold_pct=None)
+        low_threshold = NotifyThreshold(threshold_abs=10.0, threshold_pct=None)
+        periods = find_threshold_periods(prices, 15.0, high_threshold, low_threshold)
+
+        assert len(periods) == 0
+
+    def test_find_periods_multiple_separate_high_periods(self) -> None:
+        """Test finding multiple separate high price periods."""
+        now = datetime(2024, 1, 15, 22, 0, tzinfo=timezone.utc)
+        # Create pattern: normal, high, normal, high
+        prices = [
+            create_price_point(
+                (now + timedelta(hours=i/2)).isoformat(),
+                (now + timedelta(hours=(i+1)/2)).isoformat(),
+                25.0 if i in [2, 3, 8, 9] else 10.0
+            )
+            for i in range(12)
+        ]
+
+        high_threshold = NotifyThreshold(threshold_abs=20.0, threshold_pct=None)
+        periods = find_threshold_periods(prices, 15.0, high_threshold, None)
+
+        assert len(periods) == 2
+        assert all(p.is_high for p in periods)
+
+    def test_find_periods_excludes_peak_window_high_prices(self) -> None:
+        """Test that high price periods within 16:00-19:00 peak window are excluded."""
+        # Create prices that include a high period during peak window (16:00-19:00)
+        # Using local time for the test - create UTC times that will be 16:00-19:00 local
+        import time
+        # Get local timezone offset
+        local_tz = timezone(timedelta(seconds=-time.timezone))
+
+        # Set up date where 16:00-19:00 local has high prices
+        base_date = datetime(2024, 1, 15, 0, 0, tzinfo=local_tz)
+
+        prices = []
+        for hour in range(24):
+            start = base_date + timedelta(hours=hour)
+            end = start + timedelta(hours=1)
+            # High price during peak window (16:00-19:00) and at 22:00
+            if 16 <= hour < 19:
+                price_val = 25.0  # High price during peak - should be filtered
+            elif hour == 22:
+                price_val = 25.0  # High price outside peak - should NOT be filtered
+            else:
+                price_val = 10.0  # Normal price
+            prices.append(create_price_point(
+                start.isoformat(),
+                end.isoformat(),
+                price_val
+            ))
+
+        high_threshold = NotifyThreshold(threshold_abs=20.0, threshold_pct=None)
+        periods = find_threshold_periods(prices, 15.0, high_threshold, None)
+
+        # Should only find the 22:00 high period, not the 16:00-19:00 peak window
+        assert len(periods) == 1
+        # Verify it's the 22:00 period, not the peak window
+        period_start_local = periods[0].start.astimezone(local_tz)
+        assert period_start_local.hour == 22
+
+    def test_find_periods_includes_low_prices_during_peak_window(self) -> None:
+        """Test that low price periods within peak window are NOT excluded."""
+        import time
+        local_tz = timezone(timedelta(seconds=-time.timezone))
+        base_date = datetime(2024, 1, 15, 0, 0, tzinfo=local_tz)
+
+        prices = []
+        for hour in range(24):
+            start = base_date + timedelta(hours=hour)
+            end = start + timedelta(hours=1)
+            # Low price during peak window
+            if 16 <= hour < 19:
+                price_val = 5.0  # Low price during peak - should NOT be filtered
+            else:
+                price_val = 15.0  # Normal price
+            prices.append(create_price_point(
+                start.isoformat(),
+                end.isoformat(),
+                price_val
+            ))
+
+        low_threshold = NotifyThreshold(threshold_abs=10.0, threshold_pct=None)
+        periods = find_threshold_periods(prices, 15.0, None, low_threshold)
+
+        # Should find the low period even during peak window
+        assert len(periods) == 1
+        assert periods[0].is_high is False
+
+
+class TestSchedulePriceNotifications:
+    """Tests for scheduling price notifications via ntfy."""
+
+    @patch("nest_octopus.ntfy.urlopen")
+    def test_schedule_high_price_notification(self, mock_urlopen: MagicMock) -> None:
+        """Test scheduling a high price notification."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"id":"test"}'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        now = datetime.now(timezone.utc)
+        future_start = now + timedelta(hours=1)
+        future_end = now + timedelta(hours=3)
+
+        periods = [
+            PricePeriod(
+                start=future_start,
+                end=future_end,
+                avg_price=25.5,
+                is_high=True
+            )
+        ]
+
+        ntfy_client = NtfyClient("test-topic")
+        high_threshold = NotifyThreshold(threshold_abs=20.0, threshold_pct=None)
+
+        schedule_price_notifications(periods, ntfy_client, high_threshold, None)
+
+        # Verify send was called
+        assert mock_urlopen.called
+        request = mock_urlopen.call_args[0][0]
+        assert request.get_header("Title") is not None
+        assert "High" in request.get_header("Title")
+        assert request.get_header("Delay") is not None
+
+    @patch("nest_octopus.ntfy.urlopen")
+    def test_schedule_low_price_notification(self, mock_urlopen: MagicMock) -> None:
+        """Test scheduling a low price notification."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"id":"test"}'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        now = datetime.now(timezone.utc)
+        future_start = now + timedelta(hours=1)
+        future_end = now + timedelta(hours=2)
+
+        periods = [
+            PricePeriod(
+                start=future_start,
+                end=future_end,
+                avg_price=5.5,
+                is_high=False
+            )
+        ]
+
+        ntfy_client = NtfyClient("test-topic")
+        low_threshold = NotifyThreshold(threshold_abs=10.0, threshold_pct=None)
+
+        schedule_price_notifications(periods, ntfy_client, None, low_threshold)
+
+        assert mock_urlopen.called
+        request = mock_urlopen.call_args[0][0]
+        assert "Low" in request.get_header("Title")
+
+    @patch("nest_octopus.ntfy.urlopen")
+    def test_skip_past_periods(self, mock_urlopen: MagicMock) -> None:
+        """Test that past periods are skipped."""
+        now = datetime.now(timezone.utc)
+        past_start = now - timedelta(hours=2)
+        past_end = now - timedelta(hours=1)
+
+        periods = [
+            PricePeriod(
+                start=past_start,
+                end=past_end,
+                avg_price=25.0,
+                is_high=True
+            )
+        ]
+
+        ntfy_client = NtfyClient("test-topic")
+        high_threshold = NotifyThreshold(threshold_abs=20.0, threshold_pct=None)
+
+        schedule_price_notifications(periods, ntfy_client, high_threshold, None)
+
+        # urlopen should not be called for past periods
+        assert not mock_urlopen.called
+
+    @patch("nest_octopus.ntfy.urlopen")
+    def test_notification_includes_markdown(self, mock_urlopen: MagicMock) -> None:
+        """Test that notifications use markdown formatting."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"id":"test"}'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        now = datetime.now(timezone.utc)
+        future_start = now + timedelta(hours=1)
+        future_end = now + timedelta(hours=3)
+
+        periods = [
+            PricePeriod(
+                start=future_start,
+                end=future_end,
+                avg_price=25.5,
+                is_high=True
+            )
+        ]
+
+        ntfy_client = NtfyClient("test-topic")
+        high_threshold = NotifyThreshold(threshold_abs=20.0, threshold_pct=None)
+
+        schedule_price_notifications(periods, ntfy_client, high_threshold, None)
+
+        request = mock_urlopen.call_args[0][0]
+        assert request.get_header("Markdown") == "yes"
+
+    @patch("nest_octopus.ntfy.urlopen")
+    def test_skip_notifications_during_quiet_window(self, mock_urlopen: MagicMock) -> None:
+        """Test that notifications during quiet window are skipped."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"id":"test"}'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        # Create a period starting at 03:00 local time (within quiet window)
+        import time
+        local_tz = timezone(timedelta(seconds=-time.timezone))
+        base_date = datetime.now(local_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+        quiet_start = base_date + timedelta(days=1, hours=3)  # Tomorrow 03:00
+        quiet_end = quiet_start + timedelta(hours=2)
+
+        # Create a period starting at 10:00 local time (outside quiet window)
+        normal_start = base_date + timedelta(days=1, hours=10)  # Tomorrow 10:00
+        normal_end = normal_start + timedelta(hours=2)
+
+        periods = [
+            PricePeriod(
+                start=quiet_start,
+                end=quiet_end,
+                avg_price=5.0,
+                is_high=False
+            ),
+            PricePeriod(
+                start=normal_start,
+                end=normal_end,
+                avg_price=5.0,
+                is_high=False
+            )
+        ]
+
+        ntfy_client = NtfyClient("test-topic")
+        low_threshold = NotifyThreshold(threshold_abs=10.0, threshold_pct=None)
+        quiet_window = TimeRange(start=dt_time(23, 0), end=dt_time(7, 0))
+
+        schedule_price_notifications(periods, ntfy_client, None, low_threshold, quiet_window)
+
+        # Only the 10:00 notification should be sent (03:00 is within quiet window)
+        assert mock_urlopen.call_count == 1
+
+    @patch("nest_octopus.ntfy.urlopen")
+    def test_no_quiet_window_sends_all_notifications(self, mock_urlopen: MagicMock) -> None:
+        """Test that without quiet window, all notifications are sent."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"id":"test"}'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        now = datetime.now(timezone.utc)
+        future_start1 = now + timedelta(hours=1)
+        future_end1 = now + timedelta(hours=3)
+        future_start2 = now + timedelta(hours=5)
+        future_end2 = now + timedelta(hours=7)
+
+        periods = [
+            PricePeriod(
+                start=future_start1,
+                end=future_end1,
+                avg_price=5.0,
+                is_high=False
+            ),
+            PricePeriod(
+                start=future_start2,
+                end=future_end2,
+                avg_price=5.0,
+                is_high=False
+            )
+        ]
+
+        ntfy_client = NtfyClient("test-topic")
+        low_threshold = NotifyThreshold(threshold_abs=10.0, threshold_pct=None)
+
+        # No quiet window - all should be sent
+        schedule_price_notifications(periods, ntfy_client, None, low_threshold, None)
+
+        assert mock_urlopen.call_count == 2
+
+
+class TestNtfyConfigLoading:
+    """Tests for loading ntfy configuration."""
+
+    def test_load_config_with_ntfy_settings(self, tmp_path: Any) -> None:
+        """Test loading config with ntfy section."""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("""
+[octopus]
+tariff_code = E-1R-AGILE-FLEX-22-11-25-H
+
+[nest]
+thermostat_name = Living Room
+client_id = test-client-id.apps.googleusercontent.com
+project_id = test-project-123
+
+[ntfy]
+topic = my-alerts
+server = https://ntfy.example.com
+high_threshold = 120%
+low_threshold = 10p
+""")
+
+        creds_dir = tmp_path / "credentials"
+        creds_dir.mkdir()
+        (creds_dir / "client_secret").write_text("test-secret")
+        (creds_dir / "refresh_token").write_text("test-token")
+        (creds_dir / "ntfy_token").write_text("test-ntfy-token")
+
+        with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
+            config = load_config(str(config_file))
+
+        assert config.ntfy_topic == "my-alerts"
+        assert config.ntfy_server == "https://ntfy.example.com"
+        assert config.ntfy_token == "test-ntfy-token"
+        assert config.ntfy_high_threshold is not None
+        assert config.ntfy_high_threshold.threshold_pct == 1.20
+        assert config.ntfy_low_threshold is not None
+        assert config.ntfy_low_threshold.threshold_abs == 10.0
+
+    def test_load_config_without_ntfy_section(self, tmp_path: Any) -> None:
+        """Test that missing ntfy section leaves defaults."""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("""
+[octopus]
+tariff_code = E-1R-AGILE-FLEX-22-11-25-H
+
+[nest]
+thermostat_name = Living Room
+client_id = test-client-id.apps.googleusercontent.com
+project_id = test-project-123
+""")
+
+        creds_dir = tmp_path / "credentials"
+        creds_dir.mkdir()
+        (creds_dir / "client_secret").write_text("test-secret")
+        (creds_dir / "refresh_token").write_text("test-token")
+
+        with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
+            config = load_config(str(config_file))
+
+        assert config.ntfy_topic is None
+        assert config.ntfy_server == "https://ntfy.sh"
+        assert config.ntfy_token is None
+        assert config.ntfy_high_threshold is None
+        assert config.ntfy_low_threshold is None
+
+    def test_load_config_ntfy_topic_only(self, tmp_path: Any) -> None:
+        """Test config with topic but no thresholds does nothing."""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("""
+[octopus]
+tariff_code = E-1R-AGILE-FLEX-22-11-25-H
+
+[nest]
+thermostat_name = Living Room
+client_id = test-client-id.apps.googleusercontent.com
+project_id = test-project-123
+
+[ntfy]
+topic = my-alerts
+""")
+
+        creds_dir = tmp_path / "credentials"
+        creds_dir.mkdir()
+        (creds_dir / "client_secret").write_text("test-secret")
+        (creds_dir / "refresh_token").write_text("test-token")
+
+        with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
+            config = load_config(str(config_file))
+
+        # Topic set but no thresholds - notifications won't be sent
+        assert config.ntfy_topic == "my-alerts"
+        assert config.ntfy_high_threshold is None
+        assert config.ntfy_low_threshold is None
 
 
 if __name__ == "__main__":
