@@ -8,8 +8,19 @@ from typing import Any, Generator
 
 import pytest
 
-from nest_octopus.heating_optimizer import find_cheapest_windows, program_tg_switch, Config
+from nest_octopus.heating_optimizer import (
+    find_cheapest_windows,
+    program_tg_switch,
+    Config,
+    _existing_program_has_pending_slots,
+)
 from nest_octopus.octopus import PricePoint
+from nest_octopus.tg_supplymaster import (
+    DayOfWeek,
+    Program,
+    ProgramSlot,
+    TimeSlot,
+)
 
 
 class TestFindCheapestWindows:
@@ -369,3 +380,347 @@ class TestProgramTgSwitch:
 
         # Should use first unused slot (ID 2)
         mock_tg_client.return_value.enable_program.assert_called_once_with("2")
+
+
+class TestExistingProgramHasPendingSlots:
+    """Tests for _existing_program_has_pending_slots function."""
+
+    def test_no_pending_slots_all_past(self) -> None:
+        """Test that all slots in the past returns False."""
+        # Current time is 15:00, slots ended at 08:00 and 12:00
+        now_local = datetime(2025, 12, 8, 15, 0, 0)  # Monday
+
+        all_days = {day: True for day in DayOfWeek}
+        program = Program(
+            id="0",
+            name="Agile Optimized",
+            slots=[
+                ProgramSlot(
+                    start=TimeSlot(enable=True, time="06:00"),
+                    end=TimeSlot(enable=True, time="08:00"),
+                    days=all_days
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=True, time="10:00"),
+                    end=TimeSlot(enable=True, time="12:00"),
+                    days=all_days
+                ),
+                # Empty slots
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+            ]
+        )
+
+        mock_client = Mock()
+        mock_client.get_program.return_value = program
+
+        result = _existing_program_has_pending_slots(mock_client, "0", now_local)
+        assert result is False
+
+    def test_pending_slots_future_end_time(self) -> None:
+        """Test that slot with future end time returns True."""
+        # Current time is 15:00, one slot ends at 18:00
+        now_local = datetime(2025, 12, 8, 15, 0, 0)  # Monday
+
+        all_days = {day: True for day in DayOfWeek}
+        program = Program(
+            id="0",
+            name="Agile Optimized",
+            slots=[
+                ProgramSlot(
+                    start=TimeSlot(enable=True, time="06:00"),
+                    end=TimeSlot(enable=True, time="08:00"),
+                    days=all_days
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=True, time="16:00"),
+                    end=TimeSlot(enable=True, time="18:00"),  # Hasn't ended yet
+                    days=all_days
+                ),
+                # Empty slots
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+            ]
+        )
+
+        mock_client = Mock()
+        mock_client.get_program.return_value = program
+
+        result = _existing_program_has_pending_slots(mock_client, "0", now_local)
+        assert result is True
+
+    def test_slot_not_active_today(self) -> None:
+        """Test that slot not active today is ignored."""
+        # Current time is 15:00 on Monday, but slot is only for Saturday
+        now_local = datetime(2025, 12, 8, 15, 0, 0)  # Monday
+
+        saturday_only = {day: day == DayOfWeek.SATURDAY for day in DayOfWeek}
+        program = Program(
+            id="0",
+            name="Agile Optimized",
+            slots=[
+                ProgramSlot(
+                    start=TimeSlot(enable=True, time="16:00"),
+                    end=TimeSlot(enable=True, time="18:00"),  # Future time but wrong day
+                    days=saturday_only
+                ),
+                # Empty slots
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+            ]
+        )
+
+        mock_client = Mock()
+        mock_client.get_program.return_value = program
+
+        result = _existing_program_has_pending_slots(mock_client, "0", now_local)
+        assert result is False
+
+    def test_api_error_returns_false(self) -> None:
+        """Test that API error returns False (to allow update)."""
+        now_local = datetime(2025, 12, 8, 15, 0, 0)
+
+        mock_client = Mock()
+        mock_client.get_program.side_effect = Exception("API Error")
+
+        result = _existing_program_has_pending_slots(mock_client, "0", now_local)
+        assert result is False
+
+
+class TestProgramTGSwitchPendingSlots:
+    """Tests for program_tg_switch with pending slots logic."""
+
+    @pytest.fixture
+    def mock_tg_client(self) -> Generator[Any, None, None]:
+        """Create mock TG SupplyMaster client."""
+        with patch('nest_octopus.heating_optimizer.SupplyMasterClient') as mock:
+            mock.return_value.__enter__ = Mock(return_value=mock.return_value)
+            mock.return_value.__exit__ = Mock(return_value=False)
+            mock.return_value.device_id = "test_device"
+            yield mock
+
+    def test_skips_update_when_pending_slots_exist(self, mock_tg_client: Any) -> None:
+        """Test that update is skipped when existing program has pending slots."""
+        config = Config(
+            thermostat_name="Test",
+            client_id="id",
+            client_secret="secret",
+            refresh_token="token",
+            project_id="project",
+            tg_username="tg_user",
+            tg_password="password"
+        )
+
+        mock_tg_client.return_value.list_programs.return_value = {
+            'choosex': '0',
+            'namelist': [
+                {'id': '0', 'name': 'Default'},
+                {'id': '1', 'name': 'Agile Optimized'},  # Existing program
+            ]
+        }
+
+        # Mock the get_program to return a program with pending slots
+        all_days = {day: True for day in DayOfWeek}
+        existing_program = Program(
+            id="1",
+            name="Agile Optimized",
+            slots=[
+                ProgramSlot(
+                    start=TimeSlot(enable=True, time="23:00"),
+                    end=TimeSlot(enable=True, time="23:59"),  # Future time
+                    days=all_days
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+            ]
+        )
+        mock_tg_client.return_value.get_program.return_value = existing_program
+
+        windows = [(datetime.now(), datetime.now() + timedelta(hours=2), 10.0)]
+
+        program_tg_switch(config, windows)
+
+        # update_program should NOT be called because of pending slots
+        mock_tg_client.return_value.update_program.assert_not_called()
+        mock_tg_client.return_value.enable_program.assert_not_called()
+
+    def test_updates_when_all_slots_passed(self, mock_tg_client: Any) -> None:
+        """Test that update proceeds when all existing slots have passed."""
+        config = Config(
+            thermostat_name="Test",
+            client_id="id",
+            client_secret="secret",
+            refresh_token="token",
+            project_id="project",
+            tg_username="tg_user",
+            tg_password="password"
+        )
+
+        mock_tg_client.return_value.list_programs.return_value = {
+            'choosex': '0',
+            'namelist': [
+                {'id': '0', 'name': 'Default'},
+                {'id': '1', 'name': 'Agile Optimized'},  # Existing program
+            ]
+        }
+
+        # Mock the get_program to return a program with all slots in the past
+        all_days = {day: True for day in DayOfWeek}
+        existing_program = Program(
+            id="1",
+            name="Agile Optimized",
+            slots=[
+                ProgramSlot(
+                    start=TimeSlot(enable=True, time="02:00"),
+                    end=TimeSlot(enable=True, time="04:00"),  # Past time
+                    days=all_days
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=True, time="06:00"),
+                    end=TimeSlot(enable=True, time="08:00"),  # Past time
+                    days=all_days
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+                ProgramSlot(
+                    start=TimeSlot(enable=False, time="00:00"),
+                    end=TimeSlot(enable=False, time="00:00"),
+                    days={day: False for day in DayOfWeek}
+                ),
+            ]
+        )
+        mock_tg_client.return_value.get_program.return_value = existing_program
+
+        windows = [(datetime.now(), datetime.now() + timedelta(hours=2), 10.0)]
+
+        program_tg_switch(config, windows)
+
+        # update_program SHOULD be called since all slots have passed
+        mock_tg_client.return_value.update_program.assert_called_once()
+        mock_tg_client.return_value.enable_program.assert_called_once_with("1")
+
+    def test_updates_new_program_without_checking(self, mock_tg_client: Any) -> None:
+        """Test that new program (no existing Agile Optimized) is always created."""
+        config = Config(
+            thermostat_name="Test",
+            client_id="id",
+            client_secret="secret",
+            refresh_token="token",
+            project_id="project",
+            tg_username="tg_user",
+            tg_password="password"
+        )
+
+        mock_tg_client.return_value.list_programs.return_value = {
+            'choosex': '0',
+            'namelist': [
+                {'id': '0', 'name': 'Default'},
+                {'id': '1', 'name': ''},  # Unused slot
+            ]
+        }
+
+        windows = [(datetime.now(), datetime.now() + timedelta(hours=2), 10.0)]
+
+        program_tg_switch(config, windows)
+
+        # get_program should NOT be called since no existing Agile Optimized
+        mock_tg_client.return_value.get_program.assert_not_called()
+
+        # update_program SHOULD be called
+        mock_tg_client.return_value.update_program.assert_called_once()
+        mock_tg_client.return_value.enable_program.assert_called_once_with("1")

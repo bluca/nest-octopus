@@ -1107,6 +1107,59 @@ def find_cheapest_windows(
     return result
 
 
+def _existing_program_has_pending_slots(
+    tg_client: SupplyMasterClient,
+    program_id: str,
+    now_local: datetime
+) -> bool:
+    """
+    Check if an existing program has any slots that haven't happened yet today.
+
+    Args:
+        tg_client: Authenticated TG SupplyMaster client
+        program_id: ID of the program to check
+        now_local: Current local time
+
+    Returns:
+        True if any enabled slot has an end time that hasn't passed yet today
+    """
+    try:
+        program = tg_client.get_program(program_id)
+
+        # Get today's day of week (0=Sunday in TG format)
+        # Python: Monday=0, Sunday=6. TG: Sunday=0, Saturday=6
+        python_weekday = now_local.weekday()  # Monday=0
+        tg_weekday = (python_weekday + 1) % 7  # Convert to TG format (Sunday=0)
+        today = DayOfWeek(tg_weekday)
+
+        current_time = now_local.strftime("%H:%M")
+
+        for slot in program.slots:
+            # Skip disabled slots
+            if not slot.start.enable:
+                continue
+
+            # Check if this slot is active today
+            if not slot.days.get(today, False):
+                continue
+
+            # If the slot's end time hasn't passed yet, the program has pending slots
+            # Compare times as strings (HH:MM format works for comparison)
+            if slot.end.time > current_time:
+                logger.debug(
+                    f"Found pending slot: {slot.start.time}-{slot.end.time} "
+                    f"(current time: {current_time})"
+                )
+                return True
+
+        return False
+
+    except Exception as e:
+        logger.warning(f"Failed to check existing program: {e}")
+        # If we can't check, err on the side of updating
+        return False
+
+
 def program_tg_switch(
     config: Config,
     windows: List[Tuple[datetime, datetime, float]],
@@ -1178,8 +1231,19 @@ def program_tg_switch(
             for prog in programs_list.get('namelist', []):
                 if prog.get('name') == program_name:
                     program_id = prog['id']
-                    logger.debug(f"Updating existing program '{program_name}' (ID: {program_id})")
+                    logger.debug(f"Found existing program '{program_name}' (ID: {program_id})")
                     break
+
+            # If an existing program was found, check if it has pending slots
+            if program_id is not None:
+                now_local = datetime.now().astimezone()
+                if _existing_program_has_pending_slots(tg_client, program_id, now_local):
+                    logger.info(
+                        f"Existing TG program '{program_name}' has pending slots today, "
+                        f"skipping update to avoid disruption"
+                    )
+                    return
+                logger.debug(f"Existing program '{program_name}' has no pending slots, will update")
 
             # If not found, find an unused program slot (one with empty name)
             if program_id is None:
