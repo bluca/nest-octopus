@@ -123,6 +123,13 @@ class NtfyClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
+        # Encode header values as UTF-8 bytes interpreted as latin-1, so that
+        # urllib sends the raw UTF-8 bytes on the wire (latin-1 maps 1:1 to
+        # 0x00-0xFF). The ntfy server decodes them as UTF-8.
+        headers = {
+            k: v.encode("utf-8").decode("latin-1") for k, v in headers.items()
+        }
+
         try:
             request = Request(
                 self._url,

@@ -2234,6 +2234,7 @@ class TestSchedulePriceNotifications:
     def test_schedule_high_price_notification(self, mock_urlopen: MagicMock) -> None:
         """Test scheduling a high price notification."""
         mock_response = MagicMock()
+        mock_response.status = 200
         mock_response.read.return_value = b'{"id":"test"}'
         mock_urlopen.return_value.__enter__.return_value = mock_response
 
@@ -2266,6 +2267,7 @@ class TestSchedulePriceNotifications:
     def test_schedule_low_price_notification(self, mock_urlopen: MagicMock) -> None:
         """Test scheduling a low price notification."""
         mock_response = MagicMock()
+        mock_response.status = 200
         mock_response.read.return_value = b'{"id":"test"}'
         mock_urlopen.return_value.__enter__.return_value = mock_response
 
@@ -2319,6 +2321,7 @@ class TestSchedulePriceNotifications:
     def test_notification_includes_markdown(self, mock_urlopen: MagicMock) -> None:
         """Test that notifications use markdown formatting."""
         mock_response = MagicMock()
+        mock_response.status = 200
         mock_response.read.return_value = b'{"id":"test"}'
         mock_urlopen.return_value.__enter__.return_value = mock_response
 
