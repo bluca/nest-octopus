@@ -1771,6 +1771,30 @@ async def run_daily_cycle(
 
         logger.debug(f"Fetched {len(weekly_prices)} price points for previous week")
 
+        # Reconcile ECO mode with current price.  The previous cycle's
+        # scheduled handles were just canceled, so if ECO was due to be
+        # disabled later that handle is now gone.  Check whether ECO
+        # should be on *right now* based on the current price, and only
+        # disable it if the current price doesn't warrant it.
+        try:
+            sorted_tiers = sorted(
+                config.temperature_tiers, key=lambda t: t.temperature, reverse=True
+            )
+            daily_avg, weekly_avg_val, _, _ = calculate_price_statistics(
+                daily_prices, weekly_prices
+            )
+            _, should_be_eco = determine_target_temperature(
+                daily_prices[0], daily_avg, weekly_avg_val, sorted_tiers,
+                config.default_temp, config.eco_threshold_pct,
+                config.eco_threshold_abs
+            )
+            status = nest.get_device()
+            if not should_be_eco and status.eco_mode != EcoMode.OFF.value:
+                logger.info("Disabling leftover ECO mode from previous cycle")
+                nest.set_eco_mode(EcoMode.OFF)
+        except Exception as e:
+            logger.error(f"Failed to reconcile ECO mode at cycle start: {e}")
+
         # Schedule price notifications if ntfy is configured
         if config.ntfy_topic and (config.ntfy_high_threshold or config.ntfy_low_threshold):
             try:

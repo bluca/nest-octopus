@@ -493,6 +493,166 @@ class TestDailyCycle:
         # Nest client should not be closed by run_daily_cycle
         assert not mock_nest.close.called
 
+    @pytest.mark.asyncio
+    @patch('nest_octopus.heating_optimizer.NestThermostatClient')
+    @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
+    async def test_run_daily_cycle_disables_leftover_eco(self, mock_octopus_class: Any,
+                                                         mock_nest_class: Any) -> None:
+        """Test that daily cycle disables ECO mode left over from a previous cycle.
+
+        Scenario: previous cycle enabled ECO at 16:00 and scheduled disable at 23:00.
+        New cycle runs at 22:00, cancels the 23:00 handle, and the new schedule has
+        no actions (flat average prices).  ECO must still be disabled at cycle start.
+        """
+        from nest_octopus.nest_thermostat import EcoMode, ThermostatStatus
+
+        # Mock Octopus client returning flat average prices (no ECO needed)
+        mock_octopus = Mock()
+        mock_octopus.__enter__ = Mock(return_value=mock_octopus)
+        mock_octopus.__exit__ = Mock(return_value=False)
+        mock_octopus_class.return_value = mock_octopus
+
+        # All prices are 15p — average, no ECO, no tier changes → no actions
+        flat_prices = [
+            create_price_point(
+                f'2024-12-02T{h:02d}:{m:02d}:00Z',
+                f'2024-12-02T{h:02d}:{m+30 if m == 0 else 0:02d}:00Z'
+                if m == 0 else f'2024-12-02T{h+1:02d}:00:00Z',
+                15.0
+            )
+            for h in range(22, 46)  # 22:00 today to 22:00 tomorrow (UTC hours)
+            for m in (0, 30)
+        ]
+        # Fix the valid_from/valid_to to be proper 24h format
+        flat_prices = [
+            create_price_point(
+                f'2024-12-{2 + (h // 24):02d}T{h % 24:02d}:{m:02d}:00Z',
+                f'2024-12-{2 + ((h + (1 if m == 30 else 0)) // 24):02d}T{(h + (1 if m == 30 else 0)) % 24:02d}:{"00" if m == 30 else "30"}:00Z',
+                15.0
+            )
+            for h in range(22, 46)
+            for m in (0, 30)
+        ]
+        weekly_prices = [create_price_point('2024-11-25T10:00:00Z', '2024-11-25T10:30:00Z', 15.0)]
+
+        mock_octopus.get_unit_rates.side_effect = [flat_prices, weekly_prices]
+
+        # Mock Nest client — thermostat is in HEAT mode but ECO is MANUAL_ECO (leftover)
+        mock_nest = Mock()
+        mock_nest.device_id = "enterprises/proj/devices/thermostat-123"
+
+        device_data = {
+            'name': 'enterprises/proj/devices/thermostat-123',
+            'traits': {
+                'sdm.devices.traits.Temperature': {'ambientTemperatureCelsius': 20.0},
+                'sdm.devices.traits.Humidity': {'ambientHumidityPercent': 50.0},
+                'sdm.devices.traits.ThermostatMode': {'mode': 'HEAT'},
+                'sdm.devices.traits.ThermostatEco': {'mode': 'MANUAL_ECO'},
+                'sdm.devices.traits.ThermostatHvac': {'status': 'OFF'},
+                'sdm.devices.traits.ThermostatTemperatureSetpoint': {'heatCelsius': 20.0}
+            }
+        }
+        mock_status = ThermostatStatus(device_data)
+        mock_nest.get_device.return_value = mock_status
+
+        config = Config(
+            tariff_code="TEST",
+            thermostat_name="test",
+            client_id="id",
+            client_secret="secret",
+            refresh_token="token",
+            project_id="proj"
+        )
+
+        handles = await run_daily_cycle(config, mock_nest)
+
+        # ECO mode must have been disabled at cycle start
+        mock_nest.set_eco_mode.assert_called_once_with(EcoMode.OFF)
+
+        # Cancel all scheduled actions
+        for handle in handles:
+            handle.cancel()
+
+    @pytest.mark.asyncio
+    @patch('nest_octopus.heating_optimizer.NestThermostatClient')
+    @patch('nest_octopus.heating_optimizer.OctopusEnergyClient')
+    async def test_run_daily_cycle_keeps_eco_during_high_prices(self, mock_octopus_class: Any,
+                                                                 mock_nest_class: Any) -> None:
+        """Test that daily cycle keeps ECO on when the current price is HIGH.
+
+        Scenario: prices are HIGH from 16:00 to 23:00.  The cycle runs at
+        22:00 while ECO is still active.  ECO must NOT be disabled because the
+        current half-hour slot (22:00-22:30) is still above the ECO threshold.
+        ECO should only be disabled at 23:00 when prices drop.
+        """
+        from nest_octopus.nest_thermostat import EcoMode, ThermostatStatus
+
+        mock_octopus = Mock()
+        mock_octopus.__enter__ = Mock(return_value=mock_octopus)
+        mock_octopus.__exit__ = Mock(return_value=False)
+        mock_octopus_class.return_value = mock_octopus
+
+        # Build prices: HIGH from 22:00-23:00 (current), then average 23:00 onward
+        # Weekly avg ~15p, so ECO threshold at 133% ≈ 19.95p
+        prices = []
+        # 22:00-23:00: HIGH prices (above ECO threshold)
+        for h, m in [(22, 0), (22, 30)]:
+            prices.append(create_price_point(
+                f'2024-12-02T{h:02d}:{m:02d}:00Z',
+                f'2024-12-02T{h:02d}:{m+30 if m == 0 else 0:02d}:00Z'
+                if m == 0 else f'2024-12-02T{h+1:02d}:00:00Z',
+                45.0  # Well above any ECO threshold
+            ))
+        # 23:00 onward: average prices
+        for h in range(23, 46):
+            for m in (0, 30):
+                prices.append(create_price_point(
+                    f'2024-12-{2 + (h // 24):02d}T{h % 24:02d}:{m:02d}:00Z',
+                    f'2024-12-{2 + ((h + (1 if m == 30 else 0)) // 24):02d}T'
+                    f'{(h + (1 if m == 30 else 0)) % 24:02d}:{"00" if m == 30 else "30"}:00Z',
+                    15.0
+                ))
+
+        weekly_prices = [create_price_point('2024-11-25T10:00:00Z', '2024-11-25T10:30:00Z', 15.0)]
+
+        mock_octopus.get_unit_rates.side_effect = [prices, weekly_prices]
+
+        # Mock Nest client — thermostat is in HEAT mode with ECO already on
+        mock_nest = Mock()
+        mock_nest.device_id = "enterprises/proj/devices/thermostat-123"
+
+        device_data = {
+            'name': 'enterprises/proj/devices/thermostat-123',
+            'traits': {
+                'sdm.devices.traits.Temperature': {'ambientTemperatureCelsius': 20.0},
+                'sdm.devices.traits.Humidity': {'ambientHumidityPercent': 50.0},
+                'sdm.devices.traits.ThermostatMode': {'mode': 'HEAT'},
+                'sdm.devices.traits.ThermostatEco': {'mode': 'MANUAL_ECO'},
+                'sdm.devices.traits.ThermostatHvac': {'status': 'OFF'},
+                'sdm.devices.traits.ThermostatTemperatureSetpoint': {'heatCelsius': 20.0}
+            }
+        }
+        mock_status = ThermostatStatus(device_data)
+        mock_nest.get_device.return_value = mock_status
+
+        config = Config(
+            tariff_code="TEST",
+            thermostat_name="test",
+            client_id="id",
+            client_secret="secret",
+            refresh_token="token",
+            project_id="proj"
+        )
+
+        handles = await run_daily_cycle(config, mock_nest)
+
+        # ECO must NOT have been disabled — current price is HIGH
+        mock_nest.set_eco_mode.assert_not_called()
+
+        # Cancel all scheduled actions
+        for handle in handles:
+            handle.cancel()
+
 
 class TestSchedulingLogic:
     """Test specific scheduling scenarios."""
