@@ -1105,7 +1105,7 @@ def schedule_price_notifications(
             title = f"{emoji} High Price Alert"
             message = (
                 f"Electricity price is above {threshold_str}\n"
-                f"**Price:** {period.avg_price:.2f}p/kWh\n"
+                f"**Avg. Price:** {period.avg_price:.2f}p/kWh\n"
                 f"**Duration:** {duration_str}\n"
                 f"**Until:** {period.end.astimezone().strftime('%H:%M')}"
             )
@@ -1116,7 +1116,7 @@ def schedule_price_notifications(
             title = f"{emoji} Low Price Alert"
             message = (
                 f"Electricity price is below {threshold_str}\n"
-                f"**Price:** {period.avg_price:.2f}p/kWh\n"
+                f"**Avg. Price:** {period.avg_price:.2f}p/kWh\n"
                 f"**Duration:** {duration_str}\n"
                 f"**Until:** {period.end.astimezone().strftime('%H:%M')}"
             )
