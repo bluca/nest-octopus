@@ -1525,6 +1525,37 @@ def find_cheapest_windows(
             if len(selected) >= num_windows:
                 break
 
+    # If greedy selection didn't find enough windows (can happen when the
+    # cheapest window is positioned such that no other window satisfies the
+    # minimum gap constraint within the active period), fall back to exhaustive
+    # search for the combination with the lowest total average price
+    if len(selected) < num_windows and len(windows) >= num_windows:
+        logger.debug(
+            f"Greedy selection found only {len(selected)}/{num_windows} windows, "
+            f"trying exhaustive search"
+        )
+        best: List[Tuple[datetime, datetime, float, int]] = []
+        best_total = float('inf')
+
+        def _find_best(start_idx: int, chosen: List[Tuple[datetime, datetime, float, int]], total: float, remaining: int) -> None:
+            nonlocal best, best_total
+            if remaining == 0:
+                if total < best_total:
+                    best_total = total
+                    best = chosen[:]
+                return
+            for i in range(start_idx, len(windows)):
+                _, _, avg_price, slot_index = windows[i]
+                if any(abs(slot_index - si) < min_gap_slots for _, _, _, si in chosen):
+                    continue
+                chosen.append(windows[i])
+                _find_best(i + 1, chosen, total + avg_price, remaining - 1)
+                chosen.pop()
+
+        _find_best(0, [], 0.0, num_windows)
+        if best:
+            selected = best
+
     # Sort by start time for easier reading
     selected.sort(key=lambda x: x[0])
 

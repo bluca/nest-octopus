@@ -686,9 +686,14 @@ class TestProgramTGSwitchPendingSlots:
         )
         mock_tg_client.return_value.get_program.return_value = existing_program
 
-        windows = [(datetime.now(), datetime.now() + timedelta(hours=2), 10.0)]
+        # Use a fixed time of 22:00 so slots ending at 04:00/08:00 are in the past
+        fixed_now = datetime(2026, 4, 5, 22, 0, 0).astimezone()
+        windows = [(fixed_now, fixed_now + timedelta(hours=2), 10.0)]
 
-        program_tg_switch(config, windows)
+        with patch('nest_octopus.heating_optimizer.datetime') as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            program_tg_switch(config, windows)
 
         # update_program SHOULD be called since all slots have passed
         mock_tg_client.return_value.update_program.assert_called_once()

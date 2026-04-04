@@ -12,6 +12,7 @@ import os
 import signal
 import sys
 import tempfile
+import time
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, List
@@ -1977,6 +1978,55 @@ class TestTGActivePeriod:
         start, end, _ = windows[0]
         assert start.astimezone().hour == 2 and start.astimezone().minute == 0
         assert end.astimezone().hour == 4 and end.astimezone().minute == 0
+
+    def test_find_cheapest_windows_april_4_2026_two_windows(self) -> None:
+        """Test that 2 windows are found with real April 4th 2026 Agile prices.
+
+        Reproduces a bug where only 1 window was scheduled despite num_windows=2.
+        The cheapest window sits near the center of the active period (around
+        12:30-13:30 UTC), and with min_gap_hours=8 the gap to the earliest
+        slot in the active period (05:00 local) is only 15 slots (7.5 hours),
+        one short of the required 16 (8 hours). This means the second window
+        can only be found when the local timezone is ahead of UTC (e.g. BST),
+        shifting the active period boundary earlier in UTC terms.
+
+        Set TZ=UTC to reproduce the issue deterministically regardless of
+        the host timezone.
+        """
+        old_tz = os.environ.get('TZ')
+        try:
+            os.environ['TZ'] = 'UTC'
+            time.tzset()
+
+            prices = load_price_fixture("april_4_2026_prices.json")
+            assert len(prices) == 48
+
+            active_period = TimeRange(dt_time(5, 0), dt_time(21, 0))
+            windows = find_cheapest_windows(
+                prices,
+                window_hours=1,
+                num_windows=2,
+                min_gap_hours=8,
+                active_period=active_period
+            )
+
+            assert len(windows) == 2, (
+                f"Expected 2 windows but got {len(windows)}: "
+                + ", ".join(
+                    f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')} @ {p:.2f}p"
+                    for s, e, p in windows
+                )
+            )
+
+            # The cheapest window should be in the negative-price midday cluster
+            cheapest = min(windows, key=lambda w: w[2])
+            assert cheapest[2] < 0, f"Expected negative price, got {cheapest[2]:.2f}p"
+        finally:
+            if old_tz is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = old_tz
+            time.tzset()
 
 
 class TestCycleTime:
