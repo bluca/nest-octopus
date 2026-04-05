@@ -1343,6 +1343,10 @@ def calculate_heating_schedule(
     # Filter out actions in quiet window if configured
     if config.quiet_window:
         filtered_actions = []
+        last_skipped_temp: Optional[float] = None
+        last_skipped_action: Optional[HeatingAction] = None
+        temp_before_quiet: Optional[float] = None
+        entered_quiet = False
 
         for action in actions:
             # Convert to local time for comparison with quiet window
@@ -1358,8 +1362,53 @@ def calculate_heating_schedule(
             # ECO mode changes are allowed to prevent wasting energy
             if in_quiet_window and action.temperature is not None:
                 logger.info(f"Skipping temperature change in quiet window: {action}")
+                entered_quiet = True
+                last_skipped_temp = action.temperature
+                last_skipped_action = action
             else:
+                if not entered_quiet and action.temperature is not None:
+                    temp_before_quiet = action.temperature
                 filtered_actions.append(action)
+
+        # If temperature actions were filtered during the quiet window and
+        # the desired temperature at quiet window end differs from what was
+        # set before the quiet window, add a resume action
+        if (last_skipped_temp is not None and last_skipped_action is not None
+                and last_skipped_temp != temp_before_quiet):
+            ref_time = last_skipped_action.timestamp
+            if ref_time.tzinfo is not None:
+                ref_local = ref_time.astimezone()
+            else:
+                ref_local = ref_time
+
+            end_dt = ref_local.replace(
+                hour=config.quiet_window.end.hour,
+                minute=config.quiet_window.end.minute,
+                second=0, microsecond=0
+            )
+            if end_dt <= ref_local:
+                end_dt += timedelta(days=1)
+
+            end_utc = end_dt.astimezone(timezone.utc)
+
+            # Skip resume if there is already a temperature action at the
+            # quiet window end, as the price-based transition handles it
+            has_action_at_end = any(
+                a.temperature is not None
+                and abs((a.timestamp - end_utc).total_seconds()) < 60
+                for a in filtered_actions
+            )
+
+            if not has_action_at_end:
+                resume_action = HeatingAction(
+                    timestamp=end_utc,
+                    temperature=last_skipped_temp,
+                    eco_mode=False,
+                    reason=f"Temperature tier: {last_skipped_temp}°C (post-quiet resume)"
+                )
+                filtered_actions.append(resume_action)
+                filtered_actions.sort(key=lambda a: a.timestamp)
+                logger.info(f"Added post-quiet resume action: {resume_action}")
 
         actions = filtered_actions
 

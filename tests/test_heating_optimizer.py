@@ -1783,6 +1783,170 @@ class TestQuietWindow:
         # Should NOT have temperature-setting actions in quiet window
         assert temp_actions_in_quiet == 0, "Should not have temperature-setting actions during quiet window"
 
+    def test_quiet_window_resume_action_when_low_prices_extend_past(self) -> None:
+        """Test that a resume action is added at quiet window end when low prices extend beyond it."""
+        prices = []
+        base_time = datetime(2024, 1, 1, 20, 0, tzinfo=timezone.utc)
+
+        for i in range(48):
+            hour_offset = i // 2
+            minute = (i % 2) * 30
+            valid_from = base_time + timedelta(hours=hour_offset, minutes=minute)
+            valid_to = valid_from + timedelta(minutes=30)
+
+            # 20:00-23:00 UTC: 12p (above tier threshold -> default 17°C)
+            # 23:00-09:00 UTC: 3p (below tier threshold -> 20°C)
+            # 09:00-20:00 UTC: 12p (above tier threshold -> default 17°C)
+            hour_utc = valid_from.hour
+            if 23 <= hour_utc or hour_utc < 9:
+                price = 3.0
+            else:
+                price = 12.0
+
+            prices.append(create_price_point(
+                valid_from.isoformat(),
+                valid_to.isoformat(),
+                price
+            ))
+
+        weekly_prices = [create_price_point(
+            '2023-12-25T00:00:00Z',
+            '2023-12-25T00:30:00Z',
+            10.0
+        )] * 336
+
+        config = Config(
+            thermostat_name='Test',
+            client_id='test',
+            client_secret='test',
+            refresh_token='test',
+            project_id='test',
+            tariff_code='AGILE-TEST',
+            quiet_window=TimeRange(dt_time(23, 0), dt_time(7, 0)),
+            temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75)],
+            default_temp=17.0
+        )
+
+        actions = calculate_heating_schedule(prices, weekly_prices, config, base_time)
+
+        # Should have a resume action at quiet window end
+        resume_actions = [a for a in actions if 'post-quiet resume' in a.reason]
+        assert len(resume_actions) == 1, (
+            f"Expected 1 post-quiet resume action, got {len(resume_actions)}: {actions}"
+        )
+        assert resume_actions[0].temperature == 20.0
+        assert not resume_actions[0].eco_mode
+
+        # Resume should be at 07:00 local time (quiet window end)
+        resume_local = resume_actions[0].timestamp.astimezone()
+        assert resume_local.hour == 7 and resume_local.minute == 0, (
+            f"Resume should be at 07:00 local, got {resume_local.strftime('%H:%M')}"
+        )
+
+        # There should also be a subsequent action returning to default temp
+        post_resume = [a for a in actions
+                       if a.timestamp > resume_actions[0].timestamp
+                       and a.temperature is not None]
+        assert len(post_resume) >= 1, "Should have an action after resume returning to default temp"
+        assert post_resume[0].temperature == 17.0
+
+    def test_quiet_window_no_resume_when_temp_unchanged(self) -> None:
+        """Test that no resume action is added when the skipped temperature matches pre-quiet."""
+        prices = []
+        base_time = datetime(2024, 1, 1, 20, 0, tzinfo=timezone.utc)
+
+        # All prices at 12p -> always default 17°C, no tier match
+        for i in range(48):
+            hour_offset = i // 2
+            minute = (i % 2) * 30
+            valid_from = base_time + timedelta(hours=hour_offset, minutes=minute)
+            valid_to = valid_from + timedelta(minutes=30)
+
+            prices.append(create_price_point(
+                valid_from.isoformat(),
+                valid_to.isoformat(),
+                12.0
+            ))
+
+        weekly_prices = [create_price_point(
+            '2023-12-25T00:00:00Z',
+            '2023-12-25T00:30:00Z',
+            10.0
+        )] * 336
+
+        config = Config(
+            thermostat_name='Test',
+            client_id='test',
+            client_secret='test',
+            refresh_token='test',
+            project_id='test',
+            tariff_code='AGILE-TEST',
+            quiet_window=TimeRange(dt_time(23, 0), dt_time(7, 0)),
+            temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75)],
+            default_temp=17.0
+        )
+
+        actions = calculate_heating_schedule(prices, weekly_prices, config, base_time)
+
+        # No resume action should be added since temperature never changes
+        resume_actions = [a for a in actions if 'post-quiet resume' in a.reason]
+        assert len(resume_actions) == 0, (
+            f"Should not have resume actions when temp is unchanged: {resume_actions}"
+        )
+
+    def test_quiet_window_no_resume_when_action_at_boundary(self) -> None:
+        """Test that no resume is added when a price transition already exists at quiet window end."""
+        prices = []
+        base_time = datetime(2024, 1, 1, 20, 0, tzinfo=timezone.utc)
+
+        for i in range(48):
+            hour_offset = i // 2
+            minute = (i % 2) * 30
+            valid_from = base_time + timedelta(hours=hour_offset, minutes=minute)
+            valid_to = valid_from + timedelta(minutes=30)
+
+            # 20:00-23:00 UTC: 12p (default 17°C)
+            # 23:00-07:00 UTC: 3p (low price -> 20°C, in quiet window)
+            # 07:00-20:00 UTC: 12p (default 17°C, price changes AT quiet end)
+            hour_utc = valid_from.hour
+            if 23 <= hour_utc or hour_utc < 7:
+                price = 3.0
+            else:
+                price = 12.0
+
+            prices.append(create_price_point(
+                valid_from.isoformat(),
+                valid_to.isoformat(),
+                price
+            ))
+
+        weekly_prices = [create_price_point(
+            '2023-12-25T00:00:00Z',
+            '2023-12-25T00:30:00Z',
+            10.0
+        )] * 336
+
+        config = Config(
+            thermostat_name='Test',
+            client_id='test',
+            client_secret='test',
+            refresh_token='test',
+            project_id='test',
+            tariff_code='AGILE-TEST',
+            quiet_window=TimeRange(dt_time(23, 0), dt_time(7, 0)),
+            temperature_tiers=[TemperatureTier(temperature=20.0, threshold_pct=0.75)],
+            default_temp=17.0
+        )
+
+        actions = calculate_heating_schedule(prices, weekly_prices, config, base_time)
+
+        # The price transition at 07:00 (quiet window end) already creates an action,
+        # so no resume should be added
+        resume_actions = [a for a in actions if 'post-quiet resume' in a.reason]
+        assert len(resume_actions) == 0, (
+            f"Should not add resume when price transition at quiet boundary: {resume_actions}"
+        )
+
 
 class TestTGActivePeriod:
     """Test TG SupplyMaster active_period functionality."""
