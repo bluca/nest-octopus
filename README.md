@@ -109,6 +109,7 @@ device_name = your-device
 window_hours = 2             # Duration of each heating window
 num_windows = 2              # Number of windows per day
 min_gap_hours = 10           # Minimum gap between windows
+boost_on_free_energy = true  # Keep device on when price <= 0
 
 [logging]
 level = WARNING              # DEBUG, INFO, WARNING, ERROR, CRITICAL
@@ -189,6 +190,7 @@ All configuration parameters can be overridden via CLI:
 --tg-window-hours HOURS        # Window duration (default: 2)
 --tg-num-windows N             # Number of windows (default: 2)
 --tg-min-gap-hours HOURS       # Minimum gap (default: 10)
+--tg-boost-on-free-energy      # Keep device on when price <= 0
 
 # ntfy Notifications
 --ntfy-topic TOPIC             # ntfy topic for price alerts

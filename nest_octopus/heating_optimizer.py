@@ -438,6 +438,7 @@ class Config:
     tg_num_windows: int = 2  # Number of windows per day
     tg_min_gap_hours: int = 10  # Minimum gap between windows
     tg_active_period: Optional[TimeRange] = None  # Time range to restrict windows
+    tg_boost_on_free_energy: bool = True  # Keep device on when energy price <= 0
 
     # Logging
     logging_level: str = 'WARNING'  # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
@@ -637,6 +638,10 @@ def load_config(config_path: Optional[str] = None) -> Config:
         if parser.has_section('tg_supplymaster') and parser.has_option('tg_supplymaster', 'active_period'):
             tg_active_period = parse_tg_active_period(parser.get('tg_supplymaster', 'active_period'))
 
+        tg_boost_on_free_energy = True
+        if parser.has_section('tg_supplymaster') and parser.has_option('tg_supplymaster', 'boost_on_free_energy'):
+            tg_boost_on_free_energy = parser.getboolean('tg_supplymaster', 'boost_on_free_energy')
+
         config = Config(
             thermostat_name=parser.get('nest', 'thermostat_name'),
             client_id=parser.get('nest', 'client_id'),
@@ -654,6 +659,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
             tg_num_windows=tg_num_windows,
             tg_min_gap_hours=tg_min_gap_hours,
             tg_active_period=tg_active_period,
+            tg_boost_on_free_energy=tg_boost_on_free_energy,
         )
 
         # Optional heating preferences
@@ -791,6 +797,9 @@ def apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
 
     if args.tg_active_period is not None:
         config.tg_active_period = args.tg_active_period
+
+    if args.tg_boost_on_free_energy is not None:
+        config.tg_boost_on_free_energy = args.tg_boost_on_free_energy
 
     if args.quiet_window is not None:
         config.quiet_window = args.quiet_window
@@ -1477,7 +1486,8 @@ def find_cheapest_windows(
     window_hours: int = 2,
     num_windows: int = 2,
     min_gap_hours: int = 10,
-    active_period: Optional[TimeRange] = None
+    active_period: Optional[TimeRange] = None,
+    boost_on_free_energy: bool = False,
 ) -> List[Tuple[datetime, datetime, float]]:
     """
     Find the cheapest time windows for running a device.
@@ -1488,6 +1498,7 @@ def find_cheapest_windows(
         num_windows: Number of windows to find
         min_gap_hours: Minimum gap between windows in hours
         active_period: Optional TimeRange to restrict windows
+        boost_on_free_energy: If True, also include contiguous periods where price <= 0
 
     Returns:
         List of tuples (start_time, end_time, avg_price) sorted by start time
@@ -1611,9 +1622,54 @@ def find_cheapest_windows(
     # Return without the slot_index
     result = [(start, end, price) for start, end, price, _ in selected]
 
+    # Append contiguous free/negative energy periods if requested
+    if boost_on_free_energy:
+        def _to_utc(value: Any) -> datetime:
+            if isinstance(value, str):
+                dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            else:
+                dt = value
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+
+        period_start_dt: Optional[datetime] = None
+        period_end_dt: Optional[datetime] = None
+        for price in prices:
+            if price.value_inc_vat <= 0:
+                if period_start_dt is None:
+                    period_start_dt = _to_utc(price.valid_from)
+                period_end_dt = _to_utc(price.valid_to)
+            else:
+                if period_start_dt is not None:
+                    assert period_end_dt is not None
+                    result.append((period_start_dt, period_end_dt, 0.0))
+                    period_start_dt = None
+                    period_end_dt = None
+        if period_start_dt is not None:
+            assert period_end_dt is not None
+            result.append((period_start_dt, period_end_dt, 0.0))
+
+        # Remove cheapest windows fully contained within a boost period
+        boost_periods = [(s, e) for s, e, p in result if p == 0.0]
+        result = [
+            (s, e, p) for s, e, p in result
+            if p == 0.0 or not any(bs <= s and e <= be for bs, be in boost_periods)
+        ]
+
+        # If total boost duration >= total requested window duration,
+        # drop any remaining positive-cost windows
+        total_boost_hours = sum(
+            (e - s).total_seconds() / 3600 for s, e in boost_periods
+        )
+        if total_boost_hours >= window_hours * num_windows:
+            result = [(s, e, p) for s, e, p in result if p <= 0]
+
+        result.sort(key=lambda x: x[0])
+
     logger.info(f"Found {len(result)} optimal {window_hours}-hour windows:")
-    for i, (start, end, price) in enumerate(result, 1):
-        logger.info(f"  Window {i}: {start.strftime('%H:%M')}-{end.strftime('%H:%M')} @ {price:.2f}p/kWh avg")
+    for i, (start, end, avg) in enumerate(result, 1):
+        logger.info(f"  Window {i}: {start.strftime('%H:%M')}-{end.strftime('%H:%M')} @ {avg:.2f}p/kWh avg")
 
     return result
 
@@ -1915,7 +1971,8 @@ async def run_daily_cycle(
                     window_hours=config.tg_window_hours,
                     num_windows=config.tg_num_windows,
                     min_gap_hours=config.tg_min_gap_hours,
-                    active_period=config.tg_active_period
+                    active_period=config.tg_active_period,
+                    boost_on_free_energy=config.tg_boost_on_free_energy,
                 )
                 if cheap_windows:
                     program_tg_switch(config, cheap_windows)
@@ -2246,7 +2303,8 @@ def run_dry_run(config: Config) -> int:
                     window_hours=config.tg_window_hours,
                     num_windows=config.tg_num_windows,
                     min_gap_hours=config.tg_min_gap_hours,
-                    active_period=config.tg_active_period
+                    active_period=config.tg_active_period,
+                    boost_on_free_energy=config.tg_boost_on_free_energy,
                 )
 
                 if cheap_windows:
@@ -2256,7 +2314,8 @@ def run_dry_run(config: Config) -> int:
 
                     for i, (start, end, avg_price) in enumerate(cheap_windows, 1):
                         time_range = f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
-                        print(f"  Slot {i}: {time_range} @ {avg_price:.2f}p/kWh avg")
+                        label = "free energy" if avg_price <= 0 else f"{avg_price:.2f}p/kWh avg"
+                        print(f"  Slot {i}: {time_range} @ {label}")
                         print(f"         (All days)")
                         print()
 
@@ -2426,6 +2485,12 @@ async def async_main() -> int:
              'TG switch will only be programmed to turn on during this window.'
     )
     parser.add_argument(
+        '--tg-boost-on-free-energy',
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help='Keep TG device on when energy price is <= 0 (free/negative pricing)'
+    )
+    parser.add_argument(
         '--quiet-window',
         type=parse_quiet_window,
         default=None,
@@ -2516,6 +2581,7 @@ async def async_main() -> int:
             tg_num_windows=args.tg_num_windows if args.tg_num_windows is not None else 2,
             tg_min_gap_hours=args.tg_min_gap_hours if args.tg_min_gap_hours is not None else 10,
             tg_active_period=args.tg_active_period,
+            tg_boost_on_free_energy=args.tg_boost_on_free_energy if args.tg_boost_on_free_energy is not None else True,
             quiet_window=args.quiet_window,
             logging_level=args.log_level.upper() if args.log_level is not None else 'WARNING',
             cycle_time=args.cycle_time if args.cycle_time is not None else dt_time(21, 50),

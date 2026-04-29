@@ -2193,6 +2193,329 @@ class TestTGActivePeriod:
             time.tzset()
 
 
+class TestFreeEnergyBoost:
+    """Test boost_on_free_energy functionality."""
+
+    def _boost_windows(self, prices: list[PricePoint]) -> list[tuple[datetime, datetime, float]]:
+        """Helper: get the free energy boost windows (price == 0.0 sentinel)."""
+        windows = find_cheapest_windows(
+            prices, window_hours=1, num_windows=1, min_gap_hours=0,
+            boost_on_free_energy=True,
+        )
+        return [(s, e, p) for s, e, p in windows if p == 0.0]
+
+    def test_no_free_periods(self) -> None:
+        """Test with no free energy periods."""
+        prices = [
+            create_price_point('2024-12-08T00:00:00Z', '2024-12-08T00:30:00Z', 10.0),
+            create_price_point('2024-12-08T00:30:00Z', '2024-12-08T01:00:00Z', 5.0),
+            create_price_point('2024-12-08T01:00:00Z', '2024-12-08T01:30:00Z', 15.0),
+            create_price_point('2024-12-08T01:30:00Z', '2024-12-08T02:00:00Z', 20.0),
+        ]
+        assert self._boost_windows(prices) == []
+
+    def test_single_free_slot(self) -> None:
+        """Test with a single free slot."""
+        prices = [
+            create_price_point('2024-12-08T00:00:00Z', '2024-12-08T00:30:00Z', 10.0),
+            create_price_point('2024-12-08T00:30:00Z', '2024-12-08T01:00:00Z', -2.0),
+            create_price_point('2024-12-08T01:00:00Z', '2024-12-08T01:30:00Z', 15.0),
+            create_price_point('2024-12-08T01:30:00Z', '2024-12-08T02:00:00Z', 20.0),
+        ]
+        free = self._boost_windows(prices)
+        assert len(free) == 1
+        assert free[0][0].hour == 0 and free[0][0].minute == 30
+        assert free[0][1].hour == 1 and free[0][1].minute == 0
+
+    def test_zero_price_included(self) -> None:
+        """Test that price == 0 is included as free energy."""
+        prices = [
+            create_price_point('2024-12-08T00:00:00Z', '2024-12-08T00:30:00Z', 0.0),
+            create_price_point('2024-12-08T00:30:00Z', '2024-12-08T01:00:00Z', 5.0),
+            create_price_point('2024-12-08T01:00:00Z', '2024-12-08T01:30:00Z', 15.0),
+            create_price_point('2024-12-08T01:30:00Z', '2024-12-08T02:00:00Z', 20.0),
+        ]
+        free = self._boost_windows(prices)
+        assert len(free) == 1
+        assert free[0][0].hour == 0 and free[0][0].minute == 0
+        assert free[0][1].hour == 0 and free[0][1].minute == 30
+
+    def test_contiguous_merged(self) -> None:
+        """Test that contiguous free slots are merged into one period."""
+        prices = [
+            create_price_point('2024-12-08T02:00:00Z', '2024-12-08T02:30:00Z', 5.0),
+            create_price_point('2024-12-08T02:30:00Z', '2024-12-08T03:00:00Z', -1.0),
+            create_price_point('2024-12-08T03:00:00Z', '2024-12-08T03:30:00Z', -3.0),
+            create_price_point('2024-12-08T03:30:00Z', '2024-12-08T04:00:00Z', 0.0),
+            create_price_point('2024-12-08T04:00:00Z', '2024-12-08T04:30:00Z', 8.0),
+        ]
+        free = self._boost_windows(prices)
+        assert len(free) == 1
+        assert free[0][0].hour == 2 and free[0][0].minute == 30
+        assert free[0][1].hour == 4 and free[0][1].minute == 0
+
+    def test_multiple_separate(self) -> None:
+        """Test that non-contiguous free periods are separate."""
+        prices = [
+            create_price_point('2024-12-08T00:00:00Z', '2024-12-08T00:30:00Z', -1.0),
+            create_price_point('2024-12-08T00:30:00Z', '2024-12-08T01:00:00Z', 10.0),
+            create_price_point('2024-12-08T01:00:00Z', '2024-12-08T01:30:00Z', -2.0),
+            create_price_point('2024-12-08T01:30:00Z', '2024-12-08T02:00:00Z', -5.0),
+            create_price_point('2024-12-08T02:00:00Z', '2024-12-08T02:30:00Z', 15.0),
+        ]
+        free = self._boost_windows(prices)
+        assert len(free) == 2
+        assert free[0][0].hour == 0 and free[0][0].minute == 0
+        assert free[0][1].hour == 0 and free[0][1].minute == 30
+        assert free[1][0].hour == 1 and free[1][0].minute == 0
+        assert free[1][1].hour == 2 and free[1][1].minute == 0
+
+    def test_free_at_end_of_data(self) -> None:
+        """Test that a free period at end of available data is properly closed."""
+        prices = [
+            create_price_point('2024-12-08T22:00:00Z', '2024-12-08T22:30:00Z', 5.0),
+            create_price_point('2024-12-08T22:30:00Z', '2024-12-08T23:00:00Z', -1.0),
+            create_price_point('2024-12-08T23:00:00Z', '2024-12-08T23:30:00Z', -3.0),
+        ]
+        free = self._boost_windows(prices)
+        assert len(free) == 1
+        assert free[0][0].hour == 22 and free[0][0].minute == 30
+        assert free[0][1].hour == 23 and free[0][1].minute == 30
+
+    def test_not_included_when_disabled(self) -> None:
+        """Test that boost_on_free_energy=False doesn't add boost windows."""
+        prices = [
+            create_price_point('2024-12-08T00:00:00Z', '2024-12-08T00:30:00Z', -5.0),
+            create_price_point('2024-12-08T00:30:00Z', '2024-12-08T01:00:00Z', -3.0),
+            create_price_point('2024-12-08T01:00:00Z', '2024-12-08T01:30:00Z', 10.0),
+            create_price_point('2024-12-08T01:30:00Z', '2024-12-08T02:00:00Z', 20.0),
+        ]
+        without = find_cheapest_windows(
+            prices, window_hours=1, num_windows=1, min_gap_hours=0,
+            boost_on_free_energy=False,
+        )
+        with_boost = find_cheapest_windows(
+            prices, window_hours=1, num_windows=1, min_gap_hours=0,
+            boost_on_free_energy=True,
+        )
+        # Without boost: no sentinel windows
+        assert not any(p == 0.0 for _, _, p in without)
+        # With boost: sentinel window present
+        assert any(p == 0.0 for _, _, p in with_boost)
+
+    def test_overlapping_cheapest_window_removed(self) -> None:
+        """Test that a cheapest window subsumed by a boost period is removed."""
+        # 6 hours of prices: negative from 02:00-05:00, positive otherwise
+        prices = []
+        for hour in range(6):
+            price = -3.0 if 2 <= hour < 5 else 20.0
+            prices.append(create_price_point(
+                f'2024-12-08T{hour:02d}:00:00Z',
+                f'2024-12-08T{hour:02d}:30:00Z',
+                price,
+            ))
+            prices.append(create_price_point(
+                f'2024-12-08T{hour:02d}:30:00Z',
+                f'2024-12-08T{(hour+1):02d}:00:00Z',
+                price,
+            ))
+
+        windows = find_cheapest_windows(
+            prices, window_hours=1, num_windows=2, min_gap_hours=0,
+            boost_on_free_energy=True,
+        )
+
+        # The boost period 02:00-05:00 should subsume any cheapest window
+        # that falls entirely within it, so no duplicate coverage
+        boost = [(s, e) for s, e, p in windows if p == 0.0]
+        assert len(boost) == 1
+        assert boost[0][0].hour == 2 and boost[0][1].hour == 5
+
+        # No other window should overlap with the boost period
+        for s, e, p in windows:
+            if p != 0.0:
+                assert e <= boost[0][0] or s >= boost[0][1], (
+                    f"Window {s.strftime('%H:%M')}-{e.strftime('%H:%M')} "
+                    f"overlaps boost period"
+                )
+
+    def test_boost_covers_all_windows_drops_positive(self) -> None:
+        """Test that positive-cost windows are dropped when boost >= total requested."""
+        # 8 hours: negative 00:00-05:00 (5h), positive 05:00-08:00
+        prices = []
+        for hour in range(8):
+            price = -2.0 if hour < 5 else 15.0
+            prices.append(create_price_point(
+                f'2024-12-08T{hour:02d}:00:00Z',
+                f'2024-12-08T{hour:02d}:30:00Z',
+                price,
+            ))
+            prices.append(create_price_point(
+                f'2024-12-08T{hour:02d}:30:00Z',
+                f'2024-12-08T{(hour+1):02d}:00:00Z',
+                price,
+            ))
+
+        # Request 2 windows of 2h each (4h total), boost period is 5h
+        windows = find_cheapest_windows(
+            prices, window_hours=2, num_windows=2, min_gap_hours=0,
+            boost_on_free_energy=True,
+        )
+
+        # Only boost window should remain, no positive-cost windows
+        assert all(p <= 0 for _, _, p in windows)
+        assert len(windows) == 1
+        assert windows[0][0].hour == 0 and windows[0][1].hour == 5
+
+    def test_boost_shorter_than_windows_keeps_positive(self) -> None:
+        """Test that positive-cost windows are kept when boost < total requested."""
+        # 8 hours: negative 00:00-01:00 (1h), positive 01:00-08:00
+        prices = []
+        for hour in range(8):
+            price = -2.0 if hour < 1 else 15.0
+            prices.append(create_price_point(
+                f'2024-12-08T{hour:02d}:00:00Z',
+                f'2024-12-08T{hour:02d}:30:00Z',
+                price,
+            ))
+            prices.append(create_price_point(
+                f'2024-12-08T{hour:02d}:30:00Z',
+                f'2024-12-08T{(hour+1):02d}:00:00Z',
+                price,
+            ))
+
+        # Request 2 windows of 2h each (4h total), boost period is only 1h
+        windows = find_cheapest_windows(
+            prices, window_hours=2, num_windows=2, min_gap_hours=0,
+            boost_on_free_energy=True,
+        )
+
+        # Should have boost window + positive-cost windows
+        assert any(p > 0 for _, _, p in windows)
+
+    def test_with_real_fixture(self) -> None:
+        """Test with real April 4th 2026 data that has negative prices."""
+        prices = load_price_fixture("april_4_2026_prices.json")
+        without = find_cheapest_windows(
+            prices, window_hours=1, num_windows=2, min_gap_hours=8,
+            boost_on_free_energy=False,
+        )
+        with_boost = find_cheapest_windows(
+            prices, window_hours=1, num_windows=2, min_gap_hours=8,
+            boost_on_free_energy=True,
+        )
+
+        negative_slots = [p for p in prices if p.value_inc_vat <= 0]
+        if negative_slots:
+            # Boost windows (sentinel price 0.0) should be present
+            assert any(p == 0.0 for _, _, p in with_boost)
+            assert not any(p == 0.0 for _, _, p in without)
+            # All negative slots should be covered
+            for slot in negative_slots:
+                slot_start = datetime.fromisoformat(
+                    slot.valid_from.replace('Z', '+00:00')
+                ) if isinstance(slot.valid_from, str) else slot.valid_from
+                if slot_start.tzinfo is None:
+                    slot_start = slot_start.replace(tzinfo=timezone.utc)
+                covered = any(
+                    start <= slot_start < end for start, end, _ in with_boost
+                )
+                assert covered, f"Negative price slot at {slot_start} not covered"
+        else:
+            assert len(with_boost) == len(without)
+
+    def test_config_default(self) -> None:
+        """Test that boost_on_free_energy defaults to True."""
+        config = Config(
+            thermostat_name="Test", client_id="id", client_secret="secret",
+            refresh_token="token", project_id="proj",
+        )
+        assert config.tg_boost_on_free_energy is True
+
+    def test_load_config_true(self, tmp_path: Any) -> None:
+        """Test loading boost_on_free_energy from config file."""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("""
+[octopus]
+tariff_code = E-1R-AGILE-FLEX-22-11-25-H
+
+[nest]
+thermostat_name = Living Room
+client_id = test-client-id.apps.googleusercontent.com
+project_id = test-project-123
+
+[tg_supplymaster]
+username = testuser
+boost_on_free_energy = true
+""")
+
+        creds_dir = tmp_path / "credentials"
+        creds_dir.mkdir()
+        (creds_dir / "client_secret").write_text("test-secret")
+        (creds_dir / "refresh_token").write_text("test-token")
+        (creds_dir / "tg_password").write_text("test-tg-pass")
+
+        with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
+            config = load_config(str(config_file))
+
+        assert config.tg_boost_on_free_energy is True
+
+    def test_load_config_false(self, tmp_path: Any) -> None:
+        """Test loading boost_on_free_energy = false from config file."""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("""
+[octopus]
+tariff_code = E-1R-AGILE-FLEX-22-11-25-H
+
+[nest]
+thermostat_name = Living Room
+client_id = test-client-id.apps.googleusercontent.com
+project_id = test-project-123
+
+[tg_supplymaster]
+username = testuser
+boost_on_free_energy = false
+""")
+
+        creds_dir = tmp_path / "credentials"
+        creds_dir.mkdir()
+        (creds_dir / "client_secret").write_text("test-secret")
+        (creds_dir / "refresh_token").write_text("test-token")
+        (creds_dir / "tg_password").write_text("test-tg-pass")
+
+        with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
+            config = load_config(str(config_file))
+
+        assert config.tg_boost_on_free_energy is False
+
+    def test_load_config_not_set(self, tmp_path: Any) -> None:
+        """Test that boost_on_free_energy defaults to True when not in config."""
+        config_file = tmp_path / "config.ini"
+        config_file.write_text("""
+[octopus]
+tariff_code = E-1R-AGILE-FLEX-22-11-25-H
+
+[nest]
+thermostat_name = Living Room
+client_id = test-client-id.apps.googleusercontent.com
+project_id = test-project-123
+
+[tg_supplymaster]
+username = testuser
+""")
+
+        creds_dir = tmp_path / "credentials"
+        creds_dir.mkdir()
+        (creds_dir / "client_secret").write_text("test-secret")
+        (creds_dir / "refresh_token").write_text("test-token")
+        (creds_dir / "tg_password").write_text("test-tg-pass")
+
+        with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': str(creds_dir)}):
+            config = load_config(str(config_file))
+
+        assert config.tg_boost_on_free_energy is True
+
+
 class TestCycleTime:
     """Test cycle time parsing and configuration."""
 

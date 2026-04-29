@@ -54,3 +54,23 @@ default_temp = 17.0
 # Send notification when price goes below this threshold (optional)
 # Use % suffix for percentage of weekly avg or p for absolute pence
 # low_threshold = 80%
+
+[tg_supplymaster]
+# username from TG app (required to enable TG integration)
+# username = your-username
+
+# Optional: in case an account has multiple devices
+# device_name = your-device
+
+# Optional scheduling parameters (these are the defaults if not specified)
+# window_hours = 2     # Duration of each heating window in hours
+# num_windows = 2      # Number of heating windows per day
+# min_gap_hours = 10   # Minimum gap between windows in hours
+
+# Optional: restrict windows to a specific time range
+# active_period = 05:00-21:00
+
+# Optional: keep device on when energy price is free or negative (<= 0)
+# When enabled, the device is set to ALWAYS_ON for the duration of the
+# free/negative energy period, then switched back to AUTO when it ends.
+# boost_on_free_energy = true
