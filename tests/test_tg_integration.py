@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: MPL-2.0
 """Tests for TG SupplyMaster integration in heating optimizer."""
 
-from datetime import datetime, timedelta
+import os
+import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 from typing import Any, Generator
@@ -253,6 +255,65 @@ class TestProgramTgSwitch:
         # Verify program was enabled (but mode NOT changed)
         mock_tg_client.return_value.enable_program.assert_called_once_with("1")
         mock_tg_client.set_mode.assert_not_called()
+
+    def test_program_windows_use_local_time_not_utc(self, mock_tg_client: Any) -> None:
+        """Windows are UTC-aware but the device schedule runs in local time.
+
+        Reproduces a bug where UTC window times were written verbatim to the
+        TG device, which applies its weekly schedule in local wall-clock time.
+        On 2026-07-04 a free-energy period spanning 07:00-16:00 BST
+        (06:00-15:00 UTC) was programmed as 06:00-15:00, so the switch turned
+        on at 06:00 local, an hour before the free period, costing money.
+
+        Pin TZ to Europe/London (BST, UTC+1 in July) so the offset is exercised
+        deterministically regardless of the host timezone.
+        """
+        old_tz = os.environ.get('TZ')
+        try:
+            os.environ['TZ'] = 'Europe/London'
+            time.tzset()
+
+            config = Config(
+                thermostat_name="Test",
+                client_id="id",
+                client_secret="secret",
+                refresh_token="token",
+                project_id="project",
+                tg_username="tg_user",
+                tg_password="test_password"
+            )
+
+            mock_tg_client.return_value.list_programs.return_value = {
+                'choosex': '0',
+                'namelist': [{'id': '1', 'name': ''}]  # Unused slot
+            }
+
+            # UTC-aware windows exactly as returned by find_cheapest_windows.
+            # 06:00-06:30 UTC == 07:00-07:30 BST, 07:00-15:00 UTC == 08:00-16:00 BST.
+            windows = [
+                (datetime(2026, 7, 4, 6, 0, tzinfo=timezone.utc),
+                 datetime(2026, 7, 4, 6, 30, tzinfo=timezone.utc), 0.0),
+                (datetime(2026, 7, 4, 7, 0, tzinfo=timezone.utc),
+                 datetime(2026, 7, 4, 15, 0, tzinfo=timezone.utc), 0.0),
+            ]
+
+            program_tg_switch(config, windows)
+
+            program = mock_tg_client.return_value.update_program.call_args[0][0]
+
+            # Device schedule must be in local (BST) time, not UTC. The buggy
+            # behaviour wrote "06:00"/"07:00" (UTC), turning the switch on at
+            # 06:00 local before the free period started.
+            assert program.slots[0].start.time == "07:00"
+            assert program.slots[0].end.time == "07:30"
+            assert program.slots[1].start.time == "08:00"
+            assert program.slots[1].end.time == "16:00"
+        finally:
+            if old_tz is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = old_tz
+            time.tzset()
 
     def test_select_device_by_name(self, mock_tg_client: Any) -> None:
         """Test device selection by name."""

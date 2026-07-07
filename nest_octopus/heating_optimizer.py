@@ -1667,9 +1667,12 @@ def find_cheapest_windows(
 
         result.sort(key=lambda x: x[0])
 
+    # Report in local time to match the device schedule (windows are UTC-aware)
     logger.info(f"Found {len(result)} optimal {window_hours}-hour windows:")
     for i, (start, end, avg) in enumerate(result, 1):
-        logger.info(f"  Window {i}: {start.strftime('%H:%M')}-{end.strftime('%H:%M')} @ {avg:.2f}p/kWh avg")
+        start_local = start.astimezone()
+        end_local = end.astimezone()
+        logger.info(f"  Window {i}: {start_local.strftime('%H:%M')}-{end_local.strftime('%H:%M')} @ {avg:.2f}p/kWh avg")
 
     return result
 
@@ -1771,12 +1774,17 @@ def program_tg_switch(
             # All days enabled
             all_days = {day: True for day in DayOfWeek}
 
-            # Create program slots from windows
+            # Create program slots from windows.
+            # Window times are UTC-aware, but the TG device applies its weekly
+            # schedule in local wall-clock time. Convert to local before
+            # formatting so the switch runs at the intended times.
             slots = []
             for start_time, end_time, _ in windows:
+                start_local = start_time.astimezone()
+                end_local = end_time.astimezone()
                 slot = ProgramSlot(
-                    start=TimeSlot(enable=True, time=start_time.strftime("%H:%M")),
-                    end=TimeSlot(enable=True, time=end_time.strftime("%H:%M")),
+                    start=TimeSlot(enable=True, time=start_local.strftime("%H:%M")),
+                    end=TimeSlot(enable=True, time=end_local.strftime("%H:%M")),
                     days=all_days
                 )
                 slots.append(slot)
@@ -2313,7 +2321,9 @@ def run_dry_run(config: Config) -> int:
                     print()
 
                     for i, (start, end, avg_price) in enumerate(cheap_windows, 1):
-                        time_range = f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
+                        start_local = start.astimezone()
+                        end_local = end.astimezone()
+                        time_range = f"{start_local.strftime('%H:%M')}-{end_local.strftime('%H:%M')}"
                         label = "free energy" if avg_price <= 0 else f"{avg_price:.2f}p/kWh avg"
                         print(f"  Slot {i}: {time_range} @ {label}")
                         print(f"         (All days)")
