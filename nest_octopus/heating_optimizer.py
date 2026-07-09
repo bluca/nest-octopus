@@ -1481,6 +1481,85 @@ def execute_heating_action(
         raise
 
 
+def _select_cheapest_combination(
+    windows: List[Tuple[datetime, datetime, float, int]],
+    num_windows: int,
+    min_gap_slots: int,
+) -> List[Tuple[datetime, datetime, float, int]]:
+    """
+    Select the combination of windows with the lowest total average price.
+
+    Every pair of chosen windows must be at least ``min_gap_slots`` apart,
+    measured start-index to start-index. A greedy "cheapest first" strategy is
+    not optimal: picking the single cheapest window can force the remaining
+    picks into more expensive slots (or leave no slot satisfying the gap
+    constraint), so a dynamic program is used to guarantee the globally
+    cheapest valid set.
+
+    Args:
+        windows: Candidate windows as (start, end, avg_price, slot_index),
+            sorted chronologically by slot_index (ascending).
+        num_windows: Desired number of windows.
+        min_gap_slots: Minimum start-to-start gap between windows, in slots.
+
+    Returns:
+        The chosen windows in chronological order. If ``num_windows`` windows
+        cannot all satisfy the gap constraint, the largest feasible number of
+        windows (still cost-minimised) is returned.
+    """
+    n = len(windows)
+    max_k = min(num_windows, n)
+    if max_k <= 0:
+        return []
+
+    prices = [w[2] for w in windows]
+    slots = [w[3] for w in windows]
+    inf = float('inf')
+
+    # dp[j][i]: minimum total price of choosing j windows where the last chosen
+    # window is candidate i. parent[j][i]: index of the previously chosen window.
+    dp = [[inf] * n for _ in range(max_k + 1)]
+    parent = [[-1] * n for _ in range(max_k + 1)]
+
+    for i in range(n):
+        dp[1][i] = prices[i]
+
+    for j in range(2, max_k + 1):
+        for i in range(n):
+            best_prev = inf
+            best_k = -1
+            for k in range(i):
+                if slots[i] - slots[k] >= min_gap_slots and dp[j - 1][k] < best_prev:
+                    best_prev = dp[j - 1][k]
+                    best_k = k
+            if best_k != -1:
+                dp[j][i] = best_prev + prices[i]
+                parent[j][i] = best_k
+
+    # Prefer num_windows; fall back to fewer windows only if the gap constraint
+    # makes the full count infeasible.
+    for k in range(max_k, 0, -1):
+        best_i = -1
+        best_cost = inf
+        for i in range(n):
+            if dp[k][i] < best_cost:
+                best_cost = dp[k][i]
+                best_i = i
+        if best_i == -1:
+            continue
+
+        chosen: List[Tuple[datetime, datetime, float, int]] = []
+        j, i = k, best_i
+        while i != -1 and j >= 1:
+            chosen.append(windows[i])
+            i = parent[j][i]
+            j -= 1
+        chosen.reverse()
+        return chosen
+
+    return []
+
+
 def find_cheapest_windows(
     prices: List[PricePoint],
     window_hours: int = 2,
@@ -1562,59 +1641,14 @@ def find_cheapest_windows(
 
         windows.append((start_time, end_time, avg_price, i))
 
-    # Sort by price (cheapest first)
-    windows.sort(key=lambda x: x[2])
-
-    # Select windows with minimum gap constraint
-    selected: List[Tuple[datetime, datetime, float, int]] = []
+    # Choose the combination of windows with the lowest total average price,
+    # respecting the minimum gap. windows is already ordered chronologically by
+    # slot index (candidates were appended in ascending index order). A greedy
+    # cheapest-first pick is not optimal: selecting the single cheapest window
+    # can box the remaining windows into expensive slots, so use a DP that
+    # guarantees the globally cheapest valid combination.
     min_gap_slots = min_gap_hours * 2  # Convert hours to 30-min slots
-
-    for start_time, end_time, avg_price, slot_index in windows:
-        # Check if this window conflicts with already selected windows
-        conflicts = False
-        for selected_start, selected_end, _, selected_index in selected:
-            # Check if windows are too close together
-            gap = abs(slot_index - selected_index)
-            if gap < min_gap_slots:
-                conflicts = True
-                break
-
-        if not conflicts:
-            selected.append((start_time, end_time, avg_price, slot_index))
-
-            if len(selected) >= num_windows:
-                break
-
-    # If greedy selection didn't find enough windows (can happen when the
-    # cheapest window is positioned such that no other window satisfies the
-    # minimum gap constraint within the active period), fall back to exhaustive
-    # search for the combination with the lowest total average price
-    if len(selected) < num_windows and len(windows) >= num_windows:
-        logger.debug(
-            f"Greedy selection found only {len(selected)}/{num_windows} windows, "
-            f"trying exhaustive search"
-        )
-        best: List[Tuple[datetime, datetime, float, int]] = []
-        best_total = float('inf')
-
-        def _find_best(start_idx: int, chosen: List[Tuple[datetime, datetime, float, int]], total: float, remaining: int) -> None:
-            nonlocal best, best_total
-            if remaining == 0:
-                if total < best_total:
-                    best_total = total
-                    best = chosen[:]
-                return
-            for i in range(start_idx, len(windows)):
-                _, _, avg_price, slot_index = windows[i]
-                if any(abs(slot_index - si) < min_gap_slots for _, _, _, si in chosen):
-                    continue
-                chosen.append(windows[i])
-                _find_best(i + 1, chosen, total + avg_price, remaining - 1)
-                chosen.pop()
-
-        _find_best(0, [], 0.0, num_windows)
-        if best:
-            selected = best
+    selected = _select_cheapest_combination(windows, num_windows, min_gap_slots)
 
     # Sort by start time for easier reading
     selected.sort(key=lambda x: x[0])

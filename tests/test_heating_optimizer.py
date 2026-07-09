@@ -2192,6 +2192,58 @@ class TestTGActivePeriod:
                 os.environ['TZ'] = old_tz
             time.tzset()
 
+    def test_find_cheapest_windows_july_8_2026_lowest_total(self) -> None:
+        """Real 2026-07-08 prices must yield the lowest-total-cost pair.
+
+        Reproduces a greedy-selection bug: the daemon picked
+        09:30-10:30 + 14:30-15:30 local (34.45p total) because the greedy
+        "cheapest first" strategy grabbed the single cheapest window
+        (14:30-15:30) and was then forced into a dearer partner. The true
+        cost-optimal pair, min_gap_hours=5 apart within 05:00-21:00, is
+        10:00-11:00 + 15:00-16:00 local (34.20p total).
+
+        There is no free/negative energy this day, so boost adds nothing.
+        Pin TZ to Europe/London (BST) because the active period is local time.
+        """
+        old_tz = os.environ.get('TZ')
+        try:
+            os.environ['TZ'] = 'Europe/London'
+            time.tzset()
+
+            prices = load_price_fixture("july_8_2026_prices.json")
+            assert len(prices) == 48
+
+            windows = find_cheapest_windows(
+                prices,
+                window_hours=1,
+                num_windows=2,
+                min_gap_hours=5,
+                active_period=TimeRange(dt_time(5, 0), dt_time(21, 0)),
+                boost_on_free_energy=True,
+            )
+
+            assert len(windows) == 2
+
+            local = [(s.astimezone(), e.astimezone(), p) for s, e, p in windows]
+
+            # Optimal pair: 10:00-11:00 and 15:00-16:00 local.
+            assert (local[0][0].hour, local[0][0].minute) == (10, 0)
+            assert (local[0][1].hour, local[0][1].minute) == (11, 0)
+            assert (local[1][0].hour, local[1][0].minute) == (15, 0)
+            assert (local[1][1].hour, local[1][1].minute) == (16, 0)
+
+            # Total must match the brute-force optimum, and beat the greedy
+            # result (09:30-10:30 + 14:30-15:30 == 34.45p) that was returned
+            # before the fix.
+            total = sum(p for _, _, p in windows)
+            assert total == pytest.approx(34.198, abs=0.01), f"got {total:.3f}p"
+        finally:
+            if old_tz is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = old_tz
+            time.tzset()
+
 
 class TestFreeEnergyBoost:
     """Test boost_on_free_energy functionality."""
