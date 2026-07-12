@@ -15,6 +15,7 @@ ImportCredential=tg_password
 RuntimeDirectory=nest-octopus
 TemporaryFileSystem=/run
 BindReadOnlyPaths=-/etc/nest-octopus
+BindReadOnlyPaths=-/etc/localtime
 
 [Install]
 WantedBy=multi-user.target
